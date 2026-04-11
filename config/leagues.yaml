@@ -1,0 +1,23 @@
+leagues:
+  BL2:
+    name: "2. Bundesliga"
+    country: "Germany"
+    football_data_code: "D2"
+    odds_api_key: "soccer_germany_bundesliga2"
+    active: true
+    season_start_month: 8
+    season_end_month: 5
+
+  NL1:
+    name: "Eredivisie"
+    country: "Netherlands"
+    football_data_code: "N1"
+    odds_api_key: "soccer_netherlands_eredivisie"
+    active: true
+    season_start_month: 8
+    season_end_month: 5
+
+settings:
+  historical_seasons: 5
+  min_matches_for_model: 50
+  data_refresh_hour_cot: 6

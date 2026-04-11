@@ -1,0 +1,37 @@
+# Datos y base de datos
+data/betting.db
+data/historical/*.csv
+reports/
+
+# Credenciales
+.env
+config/secrets.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Entornos
+venv/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Modelos entrenados (pesados)
+models/*.pkl
+models/*.joblib

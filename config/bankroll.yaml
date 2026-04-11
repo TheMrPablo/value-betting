@@ -1,0 +1,9 @@
+current_bankroll_cop: 500000
+initial_bankroll_cop: 500000
+last_updated: "2026-04-11"
+
+targets:
+  monthly_profit_cop: 75000
+  stop_loss_monthly_pct: 25.0
+  withdraw_trigger_multiplier: 2.0
+  withdraw_pct: 20.0

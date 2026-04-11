@@ -1,0 +1,30 @@
+profiles:
+  conservative:
+    min_edge_pct: 5.0
+    kelly_multiplier: 0.25
+    max_stake_pct_bankroll: 3.0
+    require_lineup_confirmed: true
+    require_both_models: true
+
+  aggressive:
+    min_edge_pct: 8.0
+    kelly_multiplier: 0.125
+    max_stake_pct_bankroll: 2.0
+    require_lineup_confirmed: false
+    require_both_models: false
+
+portfolio:
+  conservative_pct: 90
+  aggressive_pct: 10
+  max_single_bet_pct: 5.0
+  max_total_exposure_pct: 15.0
+
+filters:
+  max_overround_pct: 8.0
+  min_hours_before_kickoff: 1.0
+  exclude_first_matchweeks: 2
+  exclude_last_matchweeks: 2
+
+ensemble:
+  dixon_coles_weight: 0.6
+  xgboost_weight: 0.4
