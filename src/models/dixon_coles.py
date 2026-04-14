@@ -638,41 +638,39 @@ class DixonColesModel:
     # Persistir predicciones en SQLite
     # ──────────────────────────────────────────────────────────────────────────
 
-    def save_predictions(self, predictions: list[DCPrediction]) -> None:
-        """
-        Guarda las predicciones en la tabla `predictions` de betting.db.
+def save_predictions(self, predictions: list[DCPrediction]) -> None:
+    if not predictions:
+        return
+    
+    # Obtener fixture_ids únicos de esta tanda
+    fixture_ids = list({p.fixture_id for p in predictions})
+    
+    now = datetime.utcnow().isoformat()
+    rows = []
+    for p in predictions:
+        rows.append((p.fixture_id, "dixon_coles", "ou25", "over",
+                     p.prob_over_25, p.lambda_home, p.lambda_away, now))
+        rows.append((p.fixture_id, "dixon_coles", "ou25", "under",
+                     p.prob_under_25, p.lambda_home, p.lambda_away, now))
+        for sel, prob in [("home", p.prob_home_win), ("draw", p.prob_draw), ("away", p.prob_away_win)]:
+            rows.append((p.fixture_id, "dixon_coles", "1x2", sel, prob, p.lambda_home, p.lambda_away, now))
+        rows.append((p.fixture_id, "dixon_coles", "btts", "btts_yes",
+                     p.prob_btts, p.lambda_home, p.lambda_away, now))
 
-        Usa INSERT OR REPLACE para idempotencia: correr el pipeline dos veces
-        el mismo día no duplica filas.
-        """
-        if not predictions:
-            return
-
-        rows = []
-        now = datetime.utcnow().isoformat()
-        for p in predictions:
-            # Over 2.5
-            rows.append((
-                p.fixture_id, "dixon_coles", "ou25", "over",
-                p.prob_over_25, p.lambda_home, p.lambda_away, now,
-            ))
-            # Under 2.5
-            rows.append((
-                p.fixture_id, "dixon_coles", "ou25", "under",
-                p.prob_under_25, p.lambda_home, p.lambda_away, now,
-            ))
-            # 1X2
-            for sel, prob in [
-                ("home", p.prob_home_win),
-                ("draw", p.prob_draw),
-                ("away", p.prob_away_win),
-            ]:
-                rows.append((p.fixture_id, "dixon_coles", "1x2", sel, prob, p.lambda_home, p.lambda_away, now))
-            # BTTS
-            rows.append((
-                p.fixture_id, "dixon_coles", "btts", "btts_yes",
-                p.prob_btts, p.lambda_home, p.lambda_away, now,
-            ))
+    with sqlite3.connect(self.db_path) as conn:
+        # Borrar predicciones anteriores para estos fixtures — evita duplicados en JOINs
+        placeholders = ",".join("?" * len(fixture_ids))
+        conn.execute(f"""
+            DELETE FROM predictions 
+            WHERE fixture_id IN ({placeholders}) AND model = 'dixon_coles'
+        """, fixture_ids)
+        
+        conn.executemany("""
+            INSERT INTO predictions
+                (fixture_id, model, market, selection, prob,
+                 lambda_home, lambda_away, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
 
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany(
