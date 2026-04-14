@@ -414,21 +414,31 @@ def predict_upcoming(
 
 
 def save_predictions_to_db(predictions: list[dict], db_path: Path = DB_PATH) -> None:
-    """Guarda predicciones XGB en la tabla predictions."""
     if not predictions:
         return
     now = datetime.utcnow().isoformat()
+    
+    fixture_ids = list({p["fixture_id"] for p in predictions})
+    
     rows = []
     for p in predictions:
         rows.append((p["fixture_id"], "xgboost", "ou25", "over",  p["prob_over"],  None, None, now))
         rows.append((p["fixture_id"], "xgboost", "ou25", "under", p["prob_under"], None, None, now))
-
+    
     with sqlite3.connect(db_path) as conn:
+        # Borrar predicciones anteriores para estos fixtures
+        placeholders = ",".join("?" * len(fixture_ids))
+        conn.execute(f"""
+            DELETE FROM predictions
+            WHERE fixture_id IN ({placeholders}) AND model = 'xgboost'
+        """, fixture_ids)
+        
         conn.executemany("""
-            INSERT OR REPLACE INTO predictions
+            INSERT INTO predictions
                 (fixture_id, model, market, selection, prob, lambda_home, lambda_away, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
+    
     logger.info("Guardadas %d predicciones XGB en DB", len(predictions))
 
 
