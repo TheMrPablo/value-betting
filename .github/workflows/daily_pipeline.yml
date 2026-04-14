@@ -1,0 +1,113 @@
+name: Daily Pipeline
+
+on:
+  schedule:
+    # Corre cada día a las 11:00 UTC = 6:00am COT
+    - cron: '0 11 * * *'
+  workflow_dispatch:  # permite correrlo manualmente desde GitHub
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download DB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: betting-db
+          path: data/
+        continue-on-error: true  # primera vez no existe, está bien
+
+      - name: Initialize DB if not exists
+        run: |
+          if [ ! -f data/betting.db ]; then
+            echo "DB no encontrada, inicializando..."
+            python scripts/init_db.py
+          fi
+
+      - name: Update historical data (football-data.co.uk)
+        run: python scripts/load_historical.py --current-only
+        env:
+          PYTHONPATH: .
+
+      - name: Update features
+        run: python src/features/feature_builder.py --league BL2
+        env:
+          PYTHONPATH: .
+
+      - name: Retrain DC model
+        run: |
+          python src/models/dixon_coles.py \
+            --league BL2 \
+            --db data/betting.db \
+            --seasons 2022-23 2023-24 2024-25 2025-26 \
+            --model models/dc_params_BL2.pkl \
+            --hours 720
+        env:
+          PYTHONPATH: .
+
+      - name: Retrain XGBoost model
+        run: python src/models/xgboost_model.py --league BL2
+        env:
+          PYTHONPATH: .
+
+      - name: Scrape odds from Betplay
+        run: python src/ingestion/odds_scraper.py --league BL2
+        env:
+          PYTHONPATH: .
+
+      - name: Run value engine
+        run: python src/engine/value_engine.py --league BL2 --hours 720
+        env:
+          PYTHONPATH: .
+
+      - name: Agent analysis and send signals
+        run: |
+          python src/output/betting_agent.py --analyze
+          python src/output/telegram_bot.py --send
+        env:
+          PYTHONPATH: .
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload DB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: betting-db
+          path: data/betting.db
+          retention-days: 7
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          python -c "
+          import httpx, os
+          token = os.environ.get('TELEGRAM_TOKEN')
+          chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+          if token and chat_id:
+              httpx.post(
+                  f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={'chat_id': chat_id, 'text': '⚠️ Pipeline diario falló. Revisar GitHub Actions.'}
+              )
+          "
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

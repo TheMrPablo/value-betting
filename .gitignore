@@ -35,3 +35,6 @@ Thumbs.db
 # Modelos entrenados (pesados)
 models/*.pkl
 models/*.joblib
+config/telegram.json
+
+config/agent.json

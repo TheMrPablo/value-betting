@@ -1,0 +1,45 @@
+name: Weekly Report
+
+on:
+  schedule:
+    # Lunes a las 13:00 UTC = 8:00am COT
+    - cron: '0 13 * * 1'
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download DB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: betting-db
+          path: data/
+        continue-on-error: true
+
+      - name: Send weekly summary
+        run: python src/output/telegram_bot.py --weekly
+        env:
+          PYTHONPATH: .
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Agent weekly review
+        run: python src/output/betting_agent.py --weekly
+        env:
+          PYTHONPATH: .
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

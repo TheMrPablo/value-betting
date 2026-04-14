@@ -1,0 +1,85 @@
+name: Pre-Match Scan
+
+on:
+  schedule:
+    # Corre cada 30 minutos
+    - cron: '0,30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download DB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: betting-db
+          path: data/
+        continue-on-error: true
+
+      - name: Check if there are upcoming fixtures
+        id: check
+        run: |
+          python -c "
+          import sqlite3, sys
+          from datetime import datetime, timedelta
+          c = sqlite3.connect('data/betting.db')
+          now = datetime.utcnow()
+          window = (now + timedelta(hours=8)).isoformat()
+          count = c.execute(
+              'SELECT COUNT(*) FROM fixtures WHERE status=? AND kickoff_utc BETWEEN ? AND ?',
+              ['scheduled', now.isoformat(), window]
+          ).fetchone()[0]
+          print(f'Fixtures próximas 8h: {count}')
+          sys.exit(0 if count > 0 else 1)
+          " && echo "has_fixtures=true" >> $GITHUB_OUTPUT || echo "has_fixtures=false" >> $GITHUB_OUTPUT
+
+      - name: Scrape odds
+        if: steps.check.outputs.has_fixtures == 'true'
+        run: python src/ingestion/odds_scraper.py --league BL2
+        env:
+          PYTHONPATH: .
+
+      - name: Run value engine
+        if: steps.check.outputs.has_fixtures == 'true'
+        run: python src/engine/value_engine.py --league BL2 --hours 8
+        env:
+          PYTHONPATH: .
+
+      - name: Agent analysis and send signals
+        if: steps.check.outputs.has_fixtures == 'true'
+        run: |
+          python src/output/betting_agent.py --analyze
+          python src/output/telegram_bot.py --send
+        env:
+          PYTHONPATH: .
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Process bot responses
+        run: python src/output/telegram_bot.py --listen
+        env:
+          PYTHONPATH: .
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Upload DB artifact
+        if: steps.check.outputs.has_fixtures == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: betting-db
+          path: data/betting.db
+          retention-days: 1
