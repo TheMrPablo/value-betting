@@ -89,6 +89,19 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Deduplicate signals
+        run: |
+          python -c "
+          import sqlite3
+          c = sqlite3.connect('data/betting.db')
+          c.execute('''DELETE FROM signals WHERE id NOT IN (SELECT MIN(id) FROM signals GROUP BY fixture_id, market, selection)''')
+          c.commit()
+          remaining = c.execute('SELECT COUNT(*) FROM signals WHERE telegram_sent=0').fetchone()[0]
+          print(f'Señales únicas para analizar: {remaining}')
+          "
+        env:
+          PYTHONPATH: .
+
       - name: Run value engine
         run: python src/engine/value_engine.py --league BL2 --hours 720
         env:
