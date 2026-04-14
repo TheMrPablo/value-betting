@@ -536,7 +536,7 @@ class ValueEngine:
 
         with sqlite3.connect(self.db_path) as conn:
             conn.executemany("""
-                INSERT OR REPLACE INTO signals
+                INSERT OR IGNORE INTO signals
                     (fixture_id, market, selection, edge_pct,
                      prob_ensemble, betplay_odds, overround_pct,
                      stake_cop, kelly_fraction, profile, status,

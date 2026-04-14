@@ -180,33 +180,33 @@ FORMATO DE RESPUESTA — responde SOLO con este JSON exacto:
 
 
 def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
-    """
-    Analiza una señal y decide si recomendarla o descartarla.
-
-    Args:
-        signal: Dict con los datos de la señal (fixture, odds, edge, etc.)
-        db_path: Ruta a la DB
-
-    Returns:
-        Dict con: recomendar (bool), razon (str), confianza (str), news (str)
-    """
     api_key = load_api_key()
 
-    home     = signal.get("home_team", "")
-    away     = signal.get("away_team", "")
-    league   = signal.get("league", "BL2")
-    sel      = signal.get("selection", "over")
-    edge     = signal.get("edge_pct", 0)
-    prob_dc  = signal.get("prob_dc", 0)
-    prob_xgb = signal.get("prob_xgb", 0)
-    odds     = signal.get("betplay_odds", 0)
-    kickoff  = signal.get("kickoff_utc", "")
+    home      = signal.get("home_team", "")
+    away      = signal.get("away_team", "")
+    league    = signal.get("league", "BL2")
+    sel       = signal.get("selection", "over")
+    edge      = signal.get("edge_pct", 0)
+    prob_dc   = signal.get("prob_dc", 0)
+    prob_xgb  = signal.get("prob_xgb", 0)
+    odds      = signal.get("betplay_odds", 0)
+    kickoff   = signal.get("kickoff_utc", "")
     matchweek = signal.get("matchweek", "?")
 
     implied_prob = 1 / odds if odds > 0 else 0
 
+    # Descarte rápido sin gastar API: edges >25% son casi siempre ruido
+    if edge > 0.25:
+        logger.info("Edge %.1f%% > 25%% — descarte directo sin API", edge * 100)
+        return {
+            "recomendar": False,
+            "razon":      f"Edge de {edge*100:.0f}% demasiado alto — el mercado sabe algo que el modelo no ve.",
+            "confianza":  "alta",
+            "news":       "",
+        }
+
     # 1. Buscar noticias
-    liga_name = "Bundesliga 2" if league == "BL2" else "Eredivisie"
+    liga_name  = "Bundesliga 2" if league == "BL2" else "Eredivisie"
     news_query = f"{home} {away} {liga_name} lesiones alineación"
     logger.info("Buscando noticias: %s", news_query)
 
@@ -217,7 +217,7 @@ def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
         news = "Sin noticias disponibles."
 
     # 2. Construir contexto para el agente
-    sel_label = "Over 2.5 goles" if sel == "over" else "Under 2.5 goles"
+    sel_label   = "Over 2.5 goles" if sel == "over" else "Under 2.5 goles"
     divergencia = abs(prob_dc - implied_prob) * 100
 
     context = f"""
@@ -227,7 +227,7 @@ SEÑAL A ANALIZAR:
 - Mercado: {sel_label}
 - Cuota Betplay: {odds} (implica {implied_prob*100:.1f}% de probabilidad)
 - Modelo Dixon-Coles: {prob_dc*100:.1f}% de probabilidad
-- Modelo XGBoost: {prob_xgb*100:.1f}% de probabilidad  
+- Modelo XGBoost: {prob_xgb*100:.1f}% de probabilidad
 - Edge estimado: +{edge*100:.1f}%
 - Divergencia modelo vs mercado: {divergencia:.1f} puntos porcentuales
 
@@ -380,14 +380,6 @@ SEÑALES APOSTADAS ESTA SEMANA ({len(played)}):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
-    """
-    Analiza todas las señales pendientes (telegram_sent=0) y:
-    - Las que el agente aprueba: las deja con telegram_sent=0 para que el bot las envíe
-    - Las que el agente descarta: las marca con telegram_sent=2 (descartada por agente)
-
-    Returns:
-        (aprobadas, descartadas)
-    """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         signals = conn.execute("""
@@ -414,7 +406,7 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
         logger.info("Sin señales pendientes para analizar.")
         return 0, 0
 
-    aprobadas  = 0
+    aprobadas   = 0
     descartadas = 0
 
     for sig in signals:
@@ -428,23 +420,18 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
 
         with sqlite3.connect(db_path) as conn:
             if result.get("recomendar"):
-                # Guardar el análisis en el campo flags para que el bot lo muestre
                 existing_flags = []
                 try:
                     existing_flags = json.loads(sig["flags"] or "[]")
                 except Exception:
                     pass
-
-                # Añadir análisis del agente como metadata
                 conn.execute("""
-                    UPDATE signals
-                    SET flags = ?
-                    WHERE id = ?
+                    UPDATE signals SET flags = ? WHERE id = ?
                 """, [
                     json.dumps({
-                        "flags":          existing_flags,
-                        "agent_analysis": result.get("razon", ""),
-                        "agent_news":     result.get("news", ""),
+                        "flags":            existing_flags,
+                        "agent_analysis":   result.get("razon", ""),
+                        "agent_news":       result.get("news", ""),
                         "agent_confidence": result.get("confianza", ""),
                     }),
                     sig["id"],
@@ -452,13 +439,14 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
                 aprobadas += 1
                 logger.info("✅ Señal %d APROBADA: %s", sig["id"], result.get("razon"))
             else:
-                # Marcar como descartada por agente (telegram_sent=2)
                 conn.execute(
                     "UPDATE signals SET telegram_sent=2 WHERE id=?",
                     [sig["id"]],
                 )
                 descartadas += 1
                 logger.info("❌ Señal %d DESCARTADA: %s", sig["id"], result.get("razon"))
+
+        time.sleep(5)  # evitar rate limit entre señales
 
     return aprobadas, descartadas
 
