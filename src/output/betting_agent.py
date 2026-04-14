@@ -1,27 +1,22 @@
 """
 betting_agent.py — Agente Claude para análisis de señales de apuestas.
 
-Antes de enviar una señal al usuario, el agente:
-1. Busca noticias recientes del partido (lesiones, alineaciones, clima)
-2. Evalúa si el edge del modelo es creíble o es ruido
-3. Decide si recomendar la apuesta o descartarla silenciosamente
-4. Genera un análisis en lenguaje simple para incluir en el mensaje
-
-Cada semana revisa las señales descartadas y aprende de los resultados.
-
-Uso:
-    from src.output.betting_agent import analyze_signal, weekly_review
+Caché de noticias con TTL dinámico según distancia al kickoff:
+  > 24h  → caché 6h
+  6-24h  → caché 2h
+  2-6h   → caché 1h
+  < 2h   → sin caché (alineaciones oficiales — siempre fresh)
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -30,12 +25,8 @@ logger = logging.getLogger(__name__)
 DB_PATH    = Path("data/betting.db")
 CONFIG_DIR = Path("config")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Configuración
-# ──────────────────────────────────────────────────────────────────────────────
 
 def load_api_key() -> str:
-    """Carga la API key de Anthropic desde config/agent.json."""
     import os
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
@@ -47,10 +38,6 @@ def load_api_key() -> str:
     raise RuntimeError("No se encontró API key. Crear config/agent.json")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Cliente Anthropic
-# ──────────────────────────────────────────────────────────────────────────────
-
 def call_claude(
     system_prompt: str,
     user_message: str,
@@ -58,8 +45,6 @@ def call_claude(
     max_tokens: int = 1000,
     retries: int = 2,
 ) -> str:
-    """Llama a la API de Anthropic con retry en caso de rate limit."""
-    import time
     last_error = None
     for attempt in range(retries):
         try:
@@ -79,12 +64,11 @@ def call_claude(
                 timeout=60,
             )
             response.raise_for_status()
-            data = response.json()
-            return data["content"][0]["text"].strip()
+            return response.json()["content"][0]["text"].strip()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429 and attempt < retries - 1:
                 wait = 30 * (attempt + 1)
-                logger.warning("Rate limit (429). Esperando %ds antes de reintentar...", wait)
+                logger.warning("Rate limit (429). Esperando %ds...", wait)
                 time.sleep(wait)
                 last_error = e
             else:
@@ -92,15 +76,55 @@ def call_claude(
     raise last_error
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Búsqueda de noticias
-# ──────────────────────────────────────────────────────────────────────────────
+def get_cache_ttl(hours_before_kickoff: float) -> int:
+    """TTL del caché en horas según distancia al partido."""
+    if hours_before_kickoff > 24:
+        return 6
+    elif hours_before_kickoff > 6:
+        return 2
+    elif hours_before_kickoff > 2:
+        return 1
+    else:
+        return 0  # sin caché — siempre buscar fresh
 
-def search_news(query: str, api_key: str) -> str:
-    """
-    Usa Claude con web search para buscar noticias recientes del partido.
-    Retorna un resumen de lo encontrado.
-    """
+
+def _ensure_cache_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS news_cache (
+            query_hash TEXT PRIMARY KEY,
+            query      TEXT,
+            result     TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+def search_news(
+    query: str,
+    api_key: str,
+    db_path: Path = DB_PATH,
+    hours_before_kickoff: float = 24.0,
+) -> str:
+    """Busca noticias con caché dinámico según distancia al kickoff."""
+    query_hash = hashlib.md5(query.encode()).hexdigest()
+    ttl        = get_cache_ttl(hours_before_kickoff)
+
+    # Verificar caché
+    if ttl > 0:
+        with sqlite3.connect(db_path) as conn:
+            _ensure_cache_table(conn)
+            cached = conn.execute("""
+                SELECT result FROM news_cache
+                WHERE query_hash = ?
+                  AND created_at > datetime('now', ? || ' hours')
+            """, [query_hash, f"-{ttl}"]).fetchone()
+        if cached:
+            logger.info("Caché hit (TTL %dh): %s", ttl, query)
+            return cached[0]
+    else:
+        logger.info("Sin caché (< 2h kickoff) — buscando fresh: %s", query)
+
+    # Llamar a la API
     system = (
         "Eres un asistente especializado en fútbol europeo. "
         "Buscás noticias recientes sobre partidos de Bundesliga 2 en alemán e inglés. "
@@ -109,7 +133,6 @@ def search_news(query: str, api_key: str) -> str:
         "Si no encontrás nada relevante, decís 'Sin noticias relevantes'. "
         "Máximo 3 frases. Siempre en español."
     )
-
     response = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -121,33 +144,36 @@ def search_news(query: str, api_key: str) -> str:
             "model":      "claude-sonnet-4-5",
             "max_tokens": 500,
             "system":     system,
-            "tools": [{
-                "type": "web_search_20250305",
-                "name": "web_search",
-            }],
-            "messages": [{
+            "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
+            "messages":   [{
                 "role":    "user",
-                "content": f"Buscá noticias de las últimas 48 horas sobre: {query}. "
-                           f"Enfocate en lesiones, alineaciones y estado de forma."
+                "content": (
+                    f"Buscá noticias de las últimas 48 horas sobre: {query}. "
+                    f"Enfocate en lesiones, alineaciones y estado de forma."
+                ),
             }],
         },
         timeout=60,
     )
     response.raise_for_status()
     data = response.json()
-
-    # Extraer texto de la respuesta (puede haber bloques de tool_use)
     text_parts = [
         block["text"]
         for block in data.get("content", [])
         if block.get("type") == "text"
     ]
-    return " ".join(text_parts).strip() or "Sin noticias relevantes."
+    result = " ".join(text_parts).strip() or "Sin noticias relevantes."
 
+    # Guardar en caché
+    with sqlite3.connect(db_path) as conn:
+        _ensure_cache_table(conn)
+        conn.execute("""
+            INSERT OR REPLACE INTO news_cache (query_hash, query, result)
+            VALUES (?, ?, ?)
+        """, [query_hash, query, result])
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Análisis principal
-# ──────────────────────────────────────────────────────────────────────────────
+    return result
+
 
 SYSTEM_PROMPT = """
 Eres un analista experto en value betting de fútbol europeo, especializado en Bundesliga 2.
@@ -196,7 +222,14 @@ def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
 
     implied_prob = 1 / odds if odds > 0 else 0
 
-    # Descarte rápido sin gastar API: edges >25% son casi siempre ruido
+    # Calcular horas hasta el kickoff para el TTL del caché
+    try:
+        kickoff_dt   = datetime.fromisoformat(kickoff.replace("Z", "+00:00"))
+        hours_before = max((kickoff_dt - datetime.now(timezone.utc)).total_seconds() / 3600, 0)
+    except (TypeError, ValueError):
+        hours_before = 24.0
+
+    # Descarte rápido sin gastar API
     if edge > 0.25:
         logger.info("Edge %.1f%% > 25%% — descarte directo sin API", edge * 100)
         return {
@@ -206,25 +239,25 @@ def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
             "news":       "",
         }
 
-    # 1. Buscar noticias
+    # 1. Buscar noticias con caché dinámico
     liga_name  = "Bundesliga 2" if league == "BL2" else "Eredivisie"
     news_query = f"{home} {away} {liga_name} lesiones alineación"
-    logger.info("Buscando noticias: %s", news_query)
+    logger.info("Buscando noticias: %s (%.1fh al kickoff)", news_query, hours_before)
 
     try:
-        news = search_news(news_query, api_key)
+        news = search_news(news_query, api_key, db_path, hours_before_kickoff=hours_before)
     except Exception as e:
         logger.warning("Error buscando noticias: %s", e)
         news = "Sin noticias disponibles."
 
-    # 2. Construir contexto para el agente
+    # 2. Construir contexto
     sel_label   = "Over 2.5 goles" if sel == "over" else "Under 2.5 goles"
     divergencia = abs(prob_dc - implied_prob) * 100
 
     context = f"""
 SEÑAL A ANALIZAR:
 - Partido: {home} vs {away} ({liga_name}, Jornada {matchweek})
-- Kickoff: {kickoff}
+- Kickoff: {kickoff} ({hours_before:.1f}h restantes)
 - Mercado: {sel_label}
 - Cuota Betplay: {odds} (implica {implied_prob*100:.1f}% de probabilidad)
 - Modelo Dixon-Coles: {prob_dc*100:.1f}% de probabilidad
@@ -238,12 +271,10 @@ NOTICIAS RECIENTES:
 ¿Debería recomendarse esta apuesta?
 """
 
-    # 3. Llamar al agente
     logger.info("Analizando señal: %s vs %s | Edge: +%.1f%%", home, away, edge * 100)
 
     try:
         response_text = call_claude(SYSTEM_PROMPT, context, api_key)
-        # Limpiar el JSON (a veces viene con markdown)
         response_text = response_text.strip()
         if "```" in response_text:
             response_text = response_text.split("```")[1]
@@ -252,14 +283,13 @@ NOTICIAS RECIENTES:
         result = json.loads(response_text)
     except Exception as e:
         logger.error("Error en análisis del agente: %s", e)
-        # Fallback conservador: siempre SKIP si el agente no pudo analizar correctamente
         result = {
             "recomendar": False,
             "razon":      "No se pudo analizar correctamente — descartando por precaución.",
             "confianza":  "baja",
         }
 
-    result["news"] = news
+    result["news"]     = news
     result["edge_pct"] = edge
 
     logger.info(
@@ -268,13 +298,8 @@ NOTICIAS RECIENTES:
         result.get("razon", ""),
         result.get("confianza", ""),
     )
-
     return result
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Revisión semanal
-# ──────────────────────────────────────────────────────────────────────────────
 
 WEEKLY_SYSTEM = """
 Eres un analista de value betting que revisa el desempeño semanal del sistema.
@@ -290,21 +315,15 @@ Responde en español, máximo 4 frases.
 
 
 def weekly_review(db_path: Path = DB_PATH) -> str:
-    """
-    Revisa las señales descartadas de la semana pasada y sus resultados.
-    Retorna un análisis en texto para incluir en el resumen semanal.
-    """
     api_key = load_api_key()
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
 
-        # Señales descartadas por el agente (SKIP) con resultado conocido
         skipped = conn.execute("""
-            SELECT
-                s.edge_pct, s.prob_ensemble, s.betplay_odds, s.selection,
-                f.home_team_name, f.away_team_name, f.over_25, f.goals_home, f.goals_away,
-                b.user_decision
+            SELECT s.edge_pct, s.prob_ensemble, s.betplay_odds, s.selection,
+                   f.home_team_name, f.away_team_name, f.over_25, f.goals_home, f.goals_away,
+                   b.user_decision
             FROM signals s
             JOIN fixtures f ON s.fixture_id = f.id
             LEFT JOIN bets b ON b.signal_id = s.id
@@ -314,12 +333,10 @@ def weekly_review(db_path: Path = DB_PATH) -> str:
             ORDER BY s.edge_pct DESC
         """).fetchall()
 
-        # Señales apostadas con resultado
         played = conn.execute("""
-            SELECT
-                s.edge_pct, s.prob_ensemble, s.betplay_odds, s.selection,
-                f.home_team_name, f.away_team_name, f.over_25,
-                r.outcome, r.pnl_cop
+            SELECT s.edge_pct, s.prob_ensemble, s.betplay_odds, s.selection,
+                   f.home_team_name, f.away_team_name, f.over_25,
+                   r.outcome, r.pnl_cop
             FROM signals s
             JOIN fixtures f ON s.fixture_id = f.id
             JOIN bets b ON b.signal_id = s.id
@@ -332,12 +349,11 @@ def weekly_review(db_path: Path = DB_PATH) -> str:
     if not skipped and not played:
         return "Sin suficientes datos esta semana para el análisis."
 
-    # Construir resumen para el agente
     skipped_summary = []
     for row in skipped:
         resultado_real = "OVER" if row["over_25"] == 1 else "UNDER"
-        habria_ganado = (
-            (row["selection"] == "over" and row["over_25"] == 1) or
+        habria_ganado  = (
+            (row["selection"] == "over"  and row["over_25"] == 1) or
             (row["selection"] == "under" and row["over_25"] == 0)
         )
         skipped_summary.append(
@@ -375,10 +391,6 @@ SEÑALES APOSTADAS ESTA SEMANA ({len(played)}):
 
     return analysis
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Pipeline integrado: analizar todas las señales pendientes
-# ──────────────────────────────────────────────────────────────────────────────
 
 def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
     with sqlite3.connect(db_path) as conn:
@@ -426,9 +438,7 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
                     existing_flags = json.loads(sig["flags"] or "[]")
                 except Exception:
                     pass
-                conn.execute("""
-                    UPDATE signals SET flags = ? WHERE id = ?
-                """, [
+                conn.execute("UPDATE signals SET flags = ? WHERE id = ?", [
                     json.dumps({
                         "flags":            existing_flags,
                         "agent_analysis":   result.get("razon", ""),
@@ -447,14 +457,10 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
                 descartadas += 1
                 logger.info("❌ Señal %d DESCARTADA: %s", sig["id"], result.get("razon"))
 
-        time.sleep(5)  # evitar rate limit entre señales
+        time.sleep(5)
 
     return aprobadas, descartadas
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# CLI
-# ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import argparse
@@ -465,9 +471,9 @@ if __name__ == "__main__":
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    parser = argparse.ArgumentParser(description="Agente Claude para análisis de señales")
-    parser.add_argument("--analyze", action="store_true", help="Analizar señales pendientes")
-    parser.add_argument("--weekly",  action="store_true", help="Revisión semanal")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--analyze", action="store_true")
+    parser.add_argument("--weekly",  action="store_true")
     parser.add_argument("--db",      default=str(DB_PATH))
     args = parser.parse_args()
 
@@ -478,11 +484,8 @@ if __name__ == "__main__":
         aprobadas, descartadas = process_pending_signals(db_path)
         print(f"\n✅ Aprobadas para enviar: {aprobadas}")
         print(f"❌ Descartadas:          {descartadas}\n")
-
     elif args.weekly:
         print("\n📊 Generando revisión semanal...\n")
-        analysis = weekly_review(db_path)
-        print(analysis)
-
+        print(weekly_review(db_path))
     else:
         parser.print_help()
