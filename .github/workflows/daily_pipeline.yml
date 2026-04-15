@@ -34,12 +34,8 @@ jobs:
           path: data/
         continue-on-error: true
 
-      - name: Initialize DB if not exists
-        run: |
-          if [ ! -f data/betting.db ]; then
-            echo "DB no encontrada — inicializando desde cero..."
-            python scripts/init_db.py
-          fi
+      - name: Initialize / migrate DB
+        run: python scripts/init_db.py
         env:
           PYTHONPATH: .
 
