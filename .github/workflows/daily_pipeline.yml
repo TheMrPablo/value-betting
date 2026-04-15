@@ -5,6 +5,12 @@ on:
     - cron: "0 11 * * *"
   workflow_dispatch:
 
+# Solo un pipeline corre a la vez. Si daily_pipeline está corriendo,
+# prematch_scan espera (o se cancela). Evita análisis duplicados del agente.
+concurrency:
+  group: betting-pipeline
+  cancel-in-progress: false
+
 jobs:
   pipeline:
     runs-on: ubuntu-latest

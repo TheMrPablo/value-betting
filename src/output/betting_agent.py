@@ -392,6 +392,9 @@ SEÑALES APOSTADAS ESTA SEMANA ({len(played)}):
     return analysis
 
 
+MAX_SIGNALS_PER_RUN = 8  # BL2: 9 partidos/jornada × 2 selecciones, filtros reducen a <8
+
+
 def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -418,6 +421,13 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
     if not signals:
         logger.info("Sin señales pendientes para analizar.")
         return 0, 0
+
+    if len(signals) > MAX_SIGNALS_PER_RUN:
+        raise RuntimeError(
+            f"Se encontraron {len(signals)} señales pendientes — máximo permitido: "
+            f"{MAX_SIGNALS_PER_RUN}. Probablemente hay señales duplicadas en la DB. "
+            f"Revisar tabla signals antes de correr el agente."
+        )
 
     aprobadas   = 0
     descartadas = 0
