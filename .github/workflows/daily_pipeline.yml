@@ -75,7 +75,7 @@ jobs:
             --db data/betting.db \
             --seasons 2022-23 2023-24 2024-25 2025-26 \
             --model models/dc_params_BL2.pkl \
-            --hours 720
+            --hours 168
         env:
           PYTHONPATH: .
 
@@ -90,7 +90,7 @@ jobs:
           PYTHONPATH: .
 
       - name: Run value engine
-        run: python src/engine/value_engine.py --league BL2 --hours 720
+        run: python src/engine/value_engine.py --league BL2 --hours 168
         env:
           PYTHONPATH: .
 

@@ -127,6 +127,10 @@ def init_db():
         home_position INTEGER,
         away_position INTEGER,
         lineup_confirmed INTEGER DEFAULT 0,
+        home_goals_home_avg_5 REAL,
+        home_conceded_home_avg_5 REAL,
+        away_goals_away_avg_5 REAL,
+        away_conceded_away_avg_5 REAL,
         computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
@@ -220,10 +224,19 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status, created_at)")
 
     # --- MIGRACIONES para DBs existentes ---
-    # SQLite no soporta ADD CONSTRAINT en tablas existentes; la restricción UNIQUE
-    # sólo aplica a tablas creadas de nuevo. El smart upsert en value_engine.py
-    # garantiza no-duplicados en tiempo de ejecución para tablas antiguas.
-    # Para predictions: el DELETE+INSERT en los modelos ya garantiza unicidad.
+    # SQLite soporta ALTER TABLE ADD COLUMN (pero no ADD CONSTRAINT).
+    # Aplicamos las columnas nuevas de venue-form de forma segura.
+    venue_cols = [
+        ("home_goals_home_avg_5",    "REAL"),
+        ("home_conceded_home_avg_5", "REAL"),
+        ("away_goals_away_avg_5",    "REAL"),
+        ("away_conceded_away_avg_5", "REAL"),
+    ]
+    for col, col_type in venue_cols:
+        try:
+            c.execute(f"ALTER TABLE match_features ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass  # columna ya existe
 
     conn.commit()
     conn.close()

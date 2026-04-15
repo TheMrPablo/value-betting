@@ -33,10 +33,16 @@ DB_PATH    = Path("data/betting.db")
 MODELS_DIR = Path("models")
 
 FEATURE_COLS = [
+    # Forma general (últimos 5 partidos, cualquier venue)
     "home_goals_avg_5", "away_goals_avg_5",
     "home_conceded_avg_5", "away_conceded_avg_5",
     "home_ou25_rate_5", "away_ou25_rate_5",
+    # Forma específica por venue — clave para OU 2.5 en BL2
+    "home_goals_home_avg_5", "home_conceded_home_avg_5",
+    "away_goals_away_avg_5", "away_conceded_away_avg_5",
+    # H2H
     "h2h_ou25_rate", "h2h_matches",
+    # Descanso y posición
     "home_rest_days", "away_rest_days",
     "home_position", "away_position",
 ]
@@ -49,6 +55,8 @@ def load_dataset(db_path: Path, league: str) -> pd.DataFrame:
                mf.home_goals_avg_5, mf.away_goals_avg_5,
                mf.home_conceded_avg_5, mf.away_conceded_avg_5,
                mf.home_ou25_rate_5, mf.away_ou25_rate_5,
+               mf.home_goals_home_avg_5, mf.home_conceded_home_avg_5,
+               mf.away_goals_away_avg_5, mf.away_conceded_away_avg_5,
                mf.h2h_ou25_rate, mf.h2h_matches,
                mf.home_rest_days, mf.away_rest_days,
                mf.home_position, mf.away_position,
@@ -203,6 +211,8 @@ def predict_upcoming(league: str, db_path: Path = DB_PATH, hours_ahead: float = 
                mf.home_goals_avg_5, mf.away_goals_avg_5,
                mf.home_conceded_avg_5, mf.away_conceded_avg_5,
                mf.home_ou25_rate_5, mf.away_ou25_rate_5,
+               mf.home_goals_home_avg_5, mf.home_conceded_home_avg_5,
+               mf.away_goals_away_avg_5, mf.away_conceded_away_avg_5,
                mf.h2h_ou25_rate, mf.h2h_matches,
                mf.home_rest_days, mf.away_rest_days,
                mf.home_position, mf.away_position
