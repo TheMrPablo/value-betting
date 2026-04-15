@@ -56,7 +56,7 @@ def call_claude(
                     "content-type":      "application/json",
                 },
                 json={
-                    "model":      "claude-sonnet-4-5",
+                    "model":      "claude-sonnet-4-6",
                     "max_tokens": max_tokens,
                     "system":     system_prompt,
                     "messages":   [{"role": "user", "content": user_message}],
@@ -141,7 +141,7 @@ def search_news(
             "content-type":      "application/json",
         },
         json={
-            "model":      "claude-sonnet-4-5",
+            "model":      "claude-sonnet-4-6",
             "max_tokens": 500,
             "system":     system,
             "tools":      [{"type": "web_search_20250305", "name": "web_search"}],

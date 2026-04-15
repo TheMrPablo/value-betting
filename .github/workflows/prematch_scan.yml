@@ -61,16 +61,29 @@ jobs:
       - name: Agent analysis and send signals
         if: steps.check.outputs.has_fixtures == 'true'
         run: |
-          python src/output/betting_agent.py --analyze
+          if [ "${USE_AGENT:-true}" = "true" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "🤖 Modo CON agente"
+            python src/output/betting_agent.py --analyze --db data/betting.db \
+              || echo "⚠️ Agente falló — enviando señales sin filtrar"
+          else
+            echo "🚫 Modo SIN agente (USE_AGENT=${USE_AGENT:-true})"
+          fi
           python src/output/telegram_bot.py --send
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USE_AGENT: ${{ vars.USE_AGENT || 'true' }}
 
       - name: Process bot responses
-        run: python src/output/telegram_bot.py --listen
+        if: always()
+        run: |
+          if [ -f data/betting.db ]; then
+            python src/output/telegram_bot.py --listen
+          else
+            echo "Sin DB — omitiendo listen"
+          fi
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

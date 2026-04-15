@@ -247,13 +247,32 @@ def load_odds(db_path: Path, fixture_id: int) -> dict:
 
 
 def load_bankroll(db_path: Path) -> float:
-    """Lee el bankroll actual desde la DB (último snapshot)."""
+    """
+    Lee el bankroll actual:
+    1. Desde el último snapshot en la DB (performance_snapshots).
+    2. Si no hay snapshots, desde config/bankroll.yaml.
+    3. Fallback final: 500_000 COP (valor real del proyecto).
+    """
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("""
             SELECT bankroll FROM performance_snapshots
             ORDER BY snapshot_date DESC LIMIT 1
         """).fetchone()
-    return float(row[0]) if row else 150_000.0
+    if row:
+        return float(row[0])
+
+    # Sin snapshots — leer bankroll.yaml
+    try:
+        import yaml
+        yaml_path = Path("config/bankroll.yaml")
+        if yaml_path.exists():
+            with open(yaml_path) as f:
+                cfg = yaml.safe_load(f)
+            return float(cfg.get("current_bankroll_cop", 500_000))
+    except Exception as exc:
+        logger.warning("No se pudo leer config/bankroll.yaml: %s", exc)
+
+    return 500_000.0
 
 
 def load_current_exposure(db_path: Path) -> float:
@@ -518,33 +537,75 @@ class ValueEngine:
         )
 
     def _save_signals(self, signals: list[BettingSignal]) -> None:
-        """Guarda las señales en la tabla signals de la DB."""
+        """
+        Guarda las señales en la tabla signals de la DB.
+
+        Lógica de upsert segura:
+        - Si ya existe una señal enviada/descartada (telegram_sent > 0) para el mismo
+          fixture+market+selection → no tocar (preservar historial).
+        - Si existe una señal pendiente (telegram_sent = 0) → reemplazar con datos frescos.
+        - Si no existe → insertar.
+
+        Esto evita duplicados cuando el value engine corre múltiples veces
+        (daily_pipeline + prematch_scan) sobre los mismos fixtures.
+        """
         if not signals:
             return
 
-        rows = []
         now = datetime.utcnow().isoformat()
-        for s in signals:
-            rows.append((
-                s.fixture_id, s.market, s.selection,
-                s.edge_pct, s.prob_ensemble, s.betplay_odds,
-                s.overround_pct, s.stake_cop, s.kelly_fraction,
-                s.profile, s.status,
-                json.dumps(s.flags_detail, ensure_ascii=False),
-                0, now,
-            ))
+        inserted = 0
+        updated  = 0
+        skipped  = 0
 
         with sqlite3.connect(self.db_path) as conn:
-            conn.executemany("""
-                INSERT OR IGNORE INTO signals
-                    (fixture_id, market, selection, edge_pct,
-                     prob_ensemble, betplay_odds, overround_pct,
-                     stake_cop, kelly_fraction, profile, status,
-                     flags, telegram_sent, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, rows)
+            for s in signals:
+                flags_json = json.dumps(s.flags_detail, ensure_ascii=False)
 
-        logger.info("%d señales guardadas en DB", len(rows))
+                existing = conn.execute("""
+                    SELECT id, telegram_sent FROM signals
+                    WHERE fixture_id = ? AND market = ? AND selection = ?
+                    ORDER BY created_at DESC LIMIT 1
+                """, [s.fixture_id, s.market, s.selection]).fetchone()
+
+                if existing:
+                    sig_id, sent = existing
+                    if sent > 0:
+                        # Ya fue enviada o descartada — no sobreescribir
+                        skipped += 1
+                        continue
+                    # Pendiente (telegram_sent=0) — actualizar con datos frescos
+                    conn.execute("""
+                        UPDATE signals SET
+                            edge_pct=?, prob_ensemble=?, betplay_odds=?,
+                            overround_pct=?, stake_cop=?, kelly_fraction=?,
+                            profile=?, status=?, flags=?, created_at=?
+                        WHERE id=?
+                    """, [
+                        s.edge_pct, s.prob_ensemble, s.betplay_odds,
+                        s.overround_pct, s.stake_cop, s.kelly_fraction,
+                        s.profile, s.status, flags_json, now, sig_id,
+                    ])
+                    updated += 1
+                else:
+                    conn.execute("""
+                        INSERT INTO signals
+                            (fixture_id, market, selection, edge_pct,
+                             prob_ensemble, betplay_odds, overround_pct,
+                             stake_cop, kelly_fraction, profile, status,
+                             flags, telegram_sent, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                    """, (
+                        s.fixture_id, s.market, s.selection,
+                        s.edge_pct, s.prob_ensemble, s.betplay_odds,
+                        s.overround_pct, s.stake_cop, s.kelly_fraction,
+                        s.profile, s.status, flags_json, now,
+                    ))
+                    inserted += 1
+
+        logger.info(
+            "%d señales → %d nuevas, %d actualizadas, %d ya enviadas (sin cambios)",
+            len(signals), inserted, updated, skipped,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────

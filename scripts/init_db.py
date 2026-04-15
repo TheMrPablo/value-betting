@@ -141,7 +141,8 @@ def init_db():
         prob REAL NOT NULL,
         lambda_home REAL,
         lambda_away REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(fixture_id, model, market, selection)
     )""")
 
     # --- SEÑALES DE VALUE ---
@@ -161,7 +162,8 @@ def init_db():
         status TEXT NOT NULL,
         flags TEXT,
         telegram_sent INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(fixture_id, market, selection)
     )""")
 
     # --- APUESTAS EJECUTADAS ---
@@ -216,6 +218,12 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_source_events_fixture ON source_events(fixture_id, event_type)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_bets_decided ON bets(decided_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status, created_at)")
+
+    # --- MIGRACIONES para DBs existentes ---
+    # SQLite no soporta ADD CONSTRAINT en tablas existentes; la restricción UNIQUE
+    # sólo aplica a tablas creadas de nuevo. El smart upsert en value_engine.py
+    # garantiza no-duplicados en tiempo de ejecución para tablas antiguas.
+    # Para predictions: el DELETE+INSERT en los modelos ya garantiza unicidad.
 
     conn.commit()
     conn.close()

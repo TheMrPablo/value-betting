@@ -250,10 +250,22 @@ def send_pending_signals(db_path: Path, client: TelegramClient, chat_id: str) ->
     sent = 0
     for sig in signals:
         sd = dict(sig)
+        # El campo flags puede ser:
+        #   a) JSON array  → señal recién generada, sin análisis del agente
+        #   b) JSON object → el agente ya analizó: {"flags": [...], "agent_analysis": "...", ...}
         try:
-            sd["flags_detail"] = json.loads(sd.get("flags") or "[]")
+            raw = json.loads(sd.get("flags") or "[]")
         except Exception:
-            sd["flags_detail"] = []
+            raw = []
+
+        if isinstance(raw, dict):
+            sd["flags_detail"]    = raw.get("flags", [])
+            sd["agent_analysis"]  = raw.get("agent_analysis", "")
+            sd["agent_confidence"] = raw.get("agent_confidence", "")
+        else:
+            sd["flags_detail"]    = raw if isinstance(raw, list) else []
+            sd["agent_analysis"]  = ""
+            sd["agent_confidence"] = ""
 
         try:
             msg     = format_signal_message(sd, bankroll, n_bets)
