@@ -6,6 +6,13 @@ on:
     - cron: '0,30 * * * *'
   workflow_dispatch:
 
+# Comparte el grupo con daily_pipeline: si daily está corriendo, prematch_scan
+# se cancela (no se encola). Previene que dos procesos analicen los mismos
+# signals con el mismo artifact y dupliquen llamadas al agente.
+concurrency:
+  group: betting-pipeline
+  cancel-in-progress: true
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -58,19 +65,24 @@ jobs:
         env:
           PYTHONPATH: .
 
-      - name: Agent analysis and send signals
+      - name: Send pending signals
         if: steps.check.outputs.has_fixtures == 'true'
-        run: |
-          python src/output/betting_agent.py --analyze
-          python src/output/telegram_bot.py --send
+        # El agente solo corre en daily_pipeline (una vez por día).
+        # prematch_scan solo envía señales que ya fueron analizadas.
+        run: python src/output/telegram_bot.py --send
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Process bot responses
-        run: python src/output/telegram_bot.py --listen
+        if: always()
+        run: |
+          if [ -f data/betting.db ]; then
+            python src/output/telegram_bot.py --listen
+          else
+            echo "Sin DB — omitiendo listen"
+          fi
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

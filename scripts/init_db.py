@@ -127,7 +127,32 @@ def init_db():
         home_position INTEGER,
         away_position INTEGER,
         lineup_confirmed INTEGER DEFAULT 0,
+        home_goals_home_avg_5 REAL,
+        home_conceded_home_avg_5 REAL,
+        away_goals_away_avg_5 REAL,
+        away_conceded_away_avg_5 REAL,
         computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
+    # --- ESTADÍSTICAS DE JUGADORES (para is_key_player) ---
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS player_stats (
+        id INTEGER PRIMARY KEY,
+        player_name TEXT NOT NULL,
+        team_name TEXT NOT NULL,
+        league TEXT NOT NULL,
+        season TEXT NOT NULL,
+        position TEXT,
+        appearances INTEGER DEFAULT 0,
+        starts INTEGER DEFAULT 0,
+        minutes_played INTEGER DEFAULT 0,
+        goals INTEGER DEFAULT 0,
+        assists INTEGER DEFAULT 0,
+        is_key_attacker INTEGER DEFAULT 0,
+        is_key_keeper INTEGER DEFAULT 0,
+        is_key_player INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(player_name, team_name, league, season)
     )""")
 
     # --- PREDICCIONES ---
@@ -141,7 +166,8 @@ def init_db():
         prob REAL NOT NULL,
         lambda_home REAL,
         lambda_away REAL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(fixture_id, model, market, selection)
     )""")
 
     # --- SEÑALES DE VALUE ---
@@ -161,7 +187,8 @@ def init_db():
         status TEXT NOT NULL,
         flags TEXT,
         telegram_sent INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(fixture_id, market, selection)
     )""")
 
     # --- APUESTAS EJECUTADAS ---
@@ -216,6 +243,21 @@ def init_db():
     c.execute("CREATE INDEX IF NOT EXISTS idx_source_events_fixture ON source_events(fixture_id, event_type)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_bets_decided ON bets(decided_at)")
     c.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals(status, created_at)")
+
+    # --- MIGRACIONES para DBs existentes ---
+    # SQLite soporta ALTER TABLE ADD COLUMN (pero no ADD CONSTRAINT).
+    # Aplicamos las columnas nuevas de venue-form de forma segura.
+    venue_cols = [
+        ("home_goals_home_avg_5",    "REAL"),
+        ("home_conceded_home_avg_5", "REAL"),
+        ("away_goals_away_avg_5",    "REAL"),
+        ("away_conceded_away_avg_5", "REAL"),
+    ]
+    for col, col_type in venue_cols:
+        try:
+            c.execute(f"ALTER TABLE match_features ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass  # columna ya existe
 
     conn.commit()
     conn.close()

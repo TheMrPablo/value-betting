@@ -148,6 +148,25 @@ def compute_team_form(df: pd.DataFrame, n: int = 5) -> dict[tuple, dict]:
                     "n_games":             len(prev),
                 }
 
+            # Forma específica por venue:
+            #   home team → sus últimos N partidos jugando EN CASA
+            #   away team → sus últimos N partidos jugando DE VISITANTE
+            venue_flag = 1 if rol == "home" else 0
+            prev_venue = hist[
+                (hist["team"] == team) &
+                (hist["kickoff"] < kickoff) &
+                (hist["es_local"] == venue_flag)
+            ].tail(n)
+
+            if len(prev_venue) > 0:
+                form_cache[(fid, rol)]["goals_scored_venue_avg"]    = prev_venue["goles_a_favor"].mean()
+                form_cache[(fid, rol)]["goals_conceded_venue_avg"]  = prev_venue["goles_en_contra"].mean()
+                form_cache[(fid, rol)]["ou25_venue_rate"]           = prev_venue["over_25"].mean()
+            else:
+                form_cache[(fid, rol)]["goals_scored_venue_avg"]   = None
+                form_cache[(fid, rol)]["goals_conceded_venue_avg"] = None
+                form_cache[(fid, rol)]["ou25_venue_rate"]          = None
+
     return form_cache
 
 
@@ -359,6 +378,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
                 (away_form.get("goals_scored_avg") or 0)
             ),
 
+            # Forma específica por venue (clave para OU 2.5 en BL2)
+            "home_goals_home_avg_5":    home_form.get("goals_scored_venue_avg"),
+            "home_conceded_home_avg_5": home_form.get("goals_conceded_venue_avg"),
+            "away_goals_away_avg_5":    away_form.get("goals_scored_venue_avg"),
+            "away_conceded_away_avg_5": away_form.get("goals_conceded_venue_avg"),
+
             # Descanso
             "home_rest_days": rest.get((fid, "home"), 7),
             "away_rest_days": rest.get((fid, "away"), 7),
@@ -427,6 +452,10 @@ def save_features(features_df: pd.DataFrame, db_path: Path) -> None:
                 row.get("home_position"),
                 row.get("away_position"),
                 0,     # lineup_confirmed
+                row.get("home_goals_home_avg_5"),
+                row.get("home_conceded_home_avg_5"),
+                row.get("away_goals_away_avg_5"),
+                row.get("away_conceded_away_avg_5"),
                 datetime.utcnow().isoformat(),
             ))
 
@@ -442,8 +471,10 @@ def save_features(features_df: pd.DataFrame, db_path: Path) -> None:
                 home_keeper_out, away_keeper_out,
                 home_position, away_position,
                 lineup_confirmed,
+                home_goals_home_avg_5, home_conceded_home_avg_5,
+                away_goals_away_avg_5, away_conceded_away_avg_5,
                 computed_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, rows)
 
     logger.info("Guardados %d registros en match_features", len(rows))

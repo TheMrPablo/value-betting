@@ -5,6 +5,12 @@ on:
     - cron: "0 11 * * *"
   workflow_dispatch:
 
+# Solo un pipeline corre a la vez. Si daily_pipeline está corriendo,
+# prematch_scan espera (o se cancela). Evita análisis duplicados del agente.
+concurrency:
+  group: betting-pipeline
+  cancel-in-progress: false
+
 jobs:
   pipeline:
     runs-on: ubuntu-latest
@@ -34,12 +40,8 @@ jobs:
           path: data/
         continue-on-error: true
 
-      - name: Initialize DB if not exists
-        run: |
-          if [ ! -f data/betting.db ]; then
-            echo "DB no encontrada — inicializando desde cero..."
-            python scripts/init_db.py
-          fi
+      - name: Initialize / migrate DB
+        run: python scripts/init_db.py
         env:
           PYTHONPATH: .
 
@@ -63,6 +65,12 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Fetch player stats (FBref)
+        run: python src/ingestion/player_stats.py --league BL2 --season 2024-25
+        env:
+          PYTHONPATH: .
+        continue-on-error: true   # FBref puede estar caído; el pipeline sigue sin stats
+
       - name: Build features
         run: python src/features/feature_builder.py --league BL2
         env:
@@ -75,7 +83,7 @@ jobs:
             --db data/betting.db \
             --seasons 2022-23 2023-24 2024-25 2025-26 \
             --model models/dc_params_BL2.pkl \
-            --hours 720
+            --hours 168
         env:
           PYTHONPATH: .
 
@@ -89,33 +97,30 @@ jobs:
         env:
           PYTHONPATH: .
 
-      - name: Deduplicate signals
-        run: |
-          python -c "
-          import sqlite3
-          c = sqlite3.connect('data/betting.db')
-          c.execute('''DELETE FROM signals WHERE id NOT IN (SELECT MIN(id) FROM signals GROUP BY fixture_id, market, selection)''')
-          c.commit()
-          remaining = c.execute('SELECT COUNT(*) FROM signals WHERE telegram_sent=0').fetchone()[0]
-          print(f'Señales únicas para analizar: {remaining}')
-          "
-        env:
-          PYTHONPATH: .
-
       - name: Run value engine
-        run: python src/engine/value_engine.py --league BL2 --hours 720
+        run: python src/engine/value_engine.py --league BL2 --hours 168
         env:
           PYTHONPATH: .
 
       - name: Agent analysis and send signals
         run: |
-          python src/output/betting_agent.py --analyze
+          # USE_AGENT=true  → el agente analiza y puede descartar señales antes de enviar
+          # USE_AGENT=false → las señales pasan directo al bot (sin filtro del agente)
+          # Para cambiar: GitHub → Settings → Variables → USE_AGENT
+          if [ "${USE_AGENT:-true}" = "true" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "🤖 Modo CON agente"
+            python src/output/betting_agent.py --analyze --db data/betting.db \
+              || echo "⚠️ Agente falló — enviando señales sin filtrar"
+          else
+            echo "🚫 Modo SIN agente (USE_AGENT=${USE_AGENT:-true})"
+          fi
           python src/output/telegram_bot.py --send
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          USE_AGENT: ${{ vars.USE_AGENT || 'true' }}
 
       - name: Upload DB artifact
         uses: actions/upload-artifact@v4
