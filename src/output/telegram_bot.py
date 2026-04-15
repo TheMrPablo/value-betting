@@ -77,82 +77,147 @@ def utc_to_cot(utc_str: str) -> str:
 # Formato de mensajes
 # ──────────────────────────────────────────────────────────────────────────────
 
-def format_signal_message(signal: dict, bankroll: float, n_bets: int) -> str:
-    """Mensaje claro y directo — sin jerga técnica."""
-    sel      = signal["selection"]
-    odds     = signal["betplay_odds"]
-    stake    = signal["stake_cop"]
-    prob     = signal["prob_ensemble"]
-    edge     = signal["edge_pct"]
-    kickoff  = utc_to_cot(signal.get("kickoff_utc", ""))
-    home     = signal["home_team"]
-    away     = signal["away_team"]
-    liga     = {"BL2": "Bundesliga 2", "NL1": "Eredivisie"}.get(
-                signal["league"], signal["league"])
-
-    apuesta_txt = (
-        "apostá a que el partido termina con\n   <b>3 o más goles (Over 2.5)</b>"
-        if sel == "over" else
-        "apostá a que el partido termina con\n   <b>2 o menos goles (Under 2.5)</b>"
-    )
-    ganancia = round(stake * (odds - 1))
-
-    burn_txt = (
-        f"\n\n⚠️ <i>Período de prueba — apuesta {n_bets + 1}/50.\n"
-        f"Stake reducido a la mitad hasta validar el modelo.</i>"
-        if n_bets < 50 else ""
-    )
-
-    flags_detail = signal.get("flags_detail", [])
-    if isinstance(flags_detail, str):
+def _parse_flags(raw_flags) -> tuple[list, str, str]:
+    """
+    Parsea el campo flags de la DB.
+    Retorna (flags_detail, agent_analysis, agent_news).
+    """
+    if isinstance(raw_flags, str):
         try:
-            flags_detail = json.loads(flags_detail)
+            raw_flags = json.loads(raw_flags)
         except Exception:
-            flags_detail = []
+            return [], "", ""
+    if isinstance(raw_flags, dict):
+        return (
+            raw_flags.get("flags", []),
+            raw_flags.get("agent_analysis", ""),
+            raw_flags.get("agent_news", ""),
+        )
+    return raw_flags if isinstance(raw_flags, list) else [], "", ""
 
-    flags_importantes = [f for f in flags_detail if f.get("code") != "BURN_IN"]
-    flags_txt = ""
-    if flags_importantes:
-        flags_txt = "\n\n⚠️ <b>Atención:</b>\n"
-        for f in flags_importantes:
-            flags_txt += f"• {f.get('message', '')}\n"
 
-    # Análisis del agente (si existe)
-    agent_analysis = signal.get("agent_analysis", "")
-    agent_txt = f"\n\n🤖 <b>Análisis:</b>\n{agent_analysis}" if agent_analysis else ""
+def format_summary_message(signals: list[dict], bankroll: float, n_bets: int) -> str:
+    """
+    Un solo mensaje resumen con TODAS las señales del día.
 
-    return (
-        f"🎯 <b>{liga}</b>\n"
-        f"<b>{home} vs {away}</b>\n"
-        f"📅 {kickoff}\n"
-        f"\n"
-        f"👉 {apuesta_txt}\n"
-        f"   Cuota Betplay: <b>{odds}</b>\n"
-        f"\n"
-        f"💰 Apostá: <b>${stake:,.0f} COP</b>\n"
-        f"   Si ganás: +${ganancia:,.0f} COP\n"
-        f"   Si perdés: -${stake:,.0f} COP\n"
-        f"\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <i>El modelo estima {prob*100:.0f}% de probabilidad.\n"
-        f"Betplay paga como si fuera {1/odds*100:.0f}%.\n"
-        f"Ventaja estimada: +{edge*100:.0f}%</i>"
-        f"{burn_txt}"
-        f"{flags_txt}"
-        f"{agent_txt}"
+    Estructura:
+      Header (liga + jornada)
+      ✅ APOSTAR — señales BET con instrucción clara
+      ━━ separador ━━
+      🟡 A TU CRITERIO — señales REVIEW con análisis de Haiku
+      ━━ separador ━━
+      📝 Contexto — noticias relevantes
+      Footer (bankroll + exposición)
+    """
+    if not signals:
+        return ""
+
+    bet_signals    = [s for s in signals if s["status"] == "BET"]
+    review_signals = [s for s in signals if s["status"] == "REVIEW"]
+
+    league = signals[0]["league"]
+    liga   = {"BL2": "Bundesliga 2", "NL1": "Eredivisie"}.get(league, league)
+    mw     = signals[0].get("matchweek")
+
+    header = f"🎯 <b>{liga}"
+    if mw:
+        header += f" — Jornada {mw}"
+    header += "</b>"
+
+    lines = [header, ""]
+
+    # ── BET: instrucciones claras ──
+    if bet_signals:
+        lines.append("✅ <b>APOSTAR</b>")
+        lines.append("")
+        for s in bet_signals:
+            sel_txt  = "Over 2.5 goles" if s["selection"] == "over" else "Under 2.5 goles"
+            ganancia = round(s["stake_cop"] * (s["betplay_odds"] - 1))
+            kickoff  = utc_to_cot(s.get("kickoff_utc", ""))
+            flags_detail, _, _ = _parse_flags(s.get("flags"))
+            flags_imp = [f for f in flags_detail
+                         if isinstance(f, dict) and f.get("code") not in ("BURN_IN",)]
+
+            lines.append(f"🔵 <b>{s['home_team']} vs {s['away_team']}</b>")
+            lines.append(f"   {kickoff}")
+            lines.append(f"   {sel_txt}  ·  Cuota <b>{s['betplay_odds']}</b>")
+            lines.append(f"   Apostá <b>${s['stake_cop']:,.0f} COP</b>  →  "
+                         f"ganás +${ganancia:,.0f}  /  perdés -${s['stake_cop']:,.0f}")
+            if flags_imp:
+                for f in flags_imp:
+                    lines.append(f"   ⚠️ <i>{f.get('message', '')}</i>")
+            lines.append("")
+
+    # ── REVIEW: a tu criterio ──
+    if review_signals:
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("🟡 <b>A TU CRITERIO</b>")
+        lines.append("")
+        for s in review_signals:
+            sel_txt       = "Over 2.5" if s["selection"] == "over" else "Under 2.5"
+            kickoff       = utc_to_cot(s.get("kickoff_utc", ""))
+            _, agent_txt, _ = _parse_flags(s.get("flags"))
+
+            lines.append(f"<b>{s['home_team']} vs {s['away_team']}</b>")
+            lines.append(f"   {kickoff}")
+            lines.append(f"   {sel_txt}  ·  Cuota {s['betplay_odds']}  "
+                         f"·  Edge +{s['edge_pct']*100:.0f}%")
+            if agent_txt:
+                lines.append(f"   <i>{agent_txt}</i>")
+            lines.append("")
+
+    # ── Contexto: noticias del agente ──
+    context_lines = []
+    for s in signals:
+        _, _, agent_news = _parse_flags(s.get("flags"))
+        if agent_news and "sin noticias" not in agent_news.lower():
+            home_short = s["home_team"].split()[0]
+            away_short = s["away_team"].split()[0]
+            news_short = agent_news[:150].rstrip()
+            context_lines.append(f"• <i>{home_short} vs {away_short}: {news_short}</i>")
+
+    if context_lines:
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("📝 <b>Contexto</b>")
+        lines += context_lines
+        lines.append("")
+
+    # ── Footer ──
+    total_stake  = sum(s["stake_cop"] for s in bet_signals)
+    exposure_pct = total_stake / bankroll * 100 if bankroll > 0 else 0
+
+    if n_bets < 50:
+        lines.append(f"⚠️ <i>Burn-in: apuesta {n_bets + 1}/50 — stake a 1/8 Kelly</i>")
+
+    lines.append(
+        f"💰 Bankroll <b>${bankroll:,.0f} COP</b>  ·  "
+        f"Apostando ${total_stake:,.0f} ({exposure_pct:.1f}%)"
     )
 
+    return "\n".join(lines)
 
-def build_inline_keyboard(signal_id: int, stake: float) -> dict:
-    """Botones: Aposté / Pasé / Aposté la mitad."""
-    half = round(stake / 2 / 500) * 500
-    return {
-        "inline_keyboard": [[
-            {"text": f"✅ Aposté ${stake:,.0f}",   "callback_data": f"GO:{signal_id}"},
-            {"text": "❌ Pasé",                     "callback_data": f"SKIP:{signal_id}"},
-            {"text": f"½ Aposté ${half:,.0f}",     "callback_data": f"HALF:{signal_id}"},
-        ]]
-    }
+
+def build_summary_keyboard(signals: list[dict]) -> dict:
+    """
+    Teclado inline con una fila por señal BET.
+    Cada fila: [✅ Equipo Sel $X  GO:id]  [½ $X/2  HALF:id]
+    """
+    rows = []
+    for s in signals:
+        if s["status"] != "BET":
+            continue
+        sid        = s["signal_id"]
+        stake      = s["stake_cop"]
+        half       = round(stake / 2 / 500) * 500
+        home_short = s["home_team"].split()[0]
+        sel_icon   = "↑" if s["selection"] == "over" else "↓"
+        rows.append([
+            {"text": f"✅ {home_short} {sel_icon} ${stake:,.0f}",
+             "callback_data": f"GO:{sid}"},
+            {"text": f"½ ${half:,.0f}",
+             "callback_data": f"HALF:{sid}"},
+        ])
+    return {"inline_keyboard": rows}
 
 
 def format_weekly_summary(stats: dict) -> str:
@@ -222,64 +287,78 @@ class TelegramClient:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def send_pending_signals(db_path: Path, client: TelegramClient, chat_id: str) -> int:
+    """
+    Envía UN solo mensaje resumen por liga con todas las señales pendientes.
+    BET = instrucción clara + botones.  REVIEW = a tu criterio, sin botones.
+    """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        signals = conn.execute("""
+        rows = conn.execute("""
             SELECT s.id AS signal_id, s.fixture_id, s.selection,
                    s.edge_pct, s.prob_ensemble, s.betplay_odds,
                    s.stake_cop, s.kelly_fraction, s.profile, s.status, s.flags,
-                   f.league, f.home_team_name AS home_team,
-                   f.away_team_name AS away_team, f.kickoff_utc,
-                   1.0/s.betplay_odds AS implied_prob
+                   f.league, f.matchweek,
+                   f.home_team_name AS home_team,
+                   f.away_team_name AS away_team,
+                   f.kickoff_utc
             FROM signals s
             JOIN fixtures f ON s.fixture_id = f.id
             WHERE s.telegram_sent = 0 AND s.status IN ('BET', 'REVIEW')
-            ORDER BY f.kickoff_utc ASC
+            ORDER BY
+                CASE WHEN s.status = 'BET' THEN 0 ELSE 1 END,
+                f.kickoff_utc ASC
         """).fetchall()
 
-        bankroll = conn.execute("""
-            SELECT COALESCE(
-                (SELECT bankroll FROM performance_snapshots ORDER BY snapshot_date DESC LIMIT 1),
-                150000)
-        """).fetchone()[0]
+        try:
+            bankroll = conn.execute("""
+                SELECT COALESCE(
+                    (SELECT bankroll FROM performance_snapshots
+                     ORDER BY snapshot_date DESC LIMIT 1),
+                    500000)
+            """).fetchone()[0]
+        except Exception:
+            bankroll = 500_000.0
 
         n_bets = conn.execute(
             "SELECT COUNT(*) FROM bets WHERE user_decision='GO'"
         ).fetchone()[0]
 
-    sent = 0
-    for sig in signals:
-        sd = dict(sig)
-        # El campo flags puede ser:
-        #   a) JSON array  → señal recién generada, sin análisis del agente
-        #   b) JSON object → el agente ya analizó: {"flags": [...], "agent_analysis": "...", ...}
-        try:
-            raw = json.loads(sd.get("flags") or "[]")
-        except Exception:
-            raw = []
+    if not rows:
+        logger.info("Sin señales pendientes para enviar.")
+        return 0
 
-        if isinstance(raw, dict):
-            sd["flags_detail"]    = raw.get("flags", [])
-            sd["agent_analysis"]  = raw.get("agent_analysis", "")
-            sd["agent_confidence"] = raw.get("agent_confidence", "")
-        else:
-            sd["flags_detail"]    = raw if isinstance(raw, list) else []
-            sd["agent_analysis"]  = ""
-            sd["agent_confidence"] = ""
+    # Agrupar por liga (por si en el futuro hay NL1 + BL2 en el mismo run)
+    from collections import defaultdict
+    by_league: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_league[row["league"]].append(dict(row))
 
+    total_sent = 0
+    for league, signals in by_league.items():
         try:
-            msg     = format_signal_message(sd, bankroll, n_bets)
-            buttons = build_inline_keyboard(sd["signal_id"], sd["stake_cop"])
-            client.send_message(chat_id, msg, reply_markup=buttons)
+            msg     = format_summary_message(signals, bankroll, n_bets)
+            buttons = build_summary_keyboard(signals)
+            keyboard = buttons if buttons["inline_keyboard"] else None
+
+            client.send_message(chat_id, msg, reply_markup=keyboard)
+
+            signal_ids   = [s["signal_id"] for s in signals]
+            placeholders = ",".join("?" * len(signal_ids))
             with sqlite3.connect(db_path) as conn:
-                conn.execute("UPDATE signals SET telegram_sent=1 WHERE id=?",
-                             [sd["signal_id"]])
-            sent += 1
-            logger.info("Señal %d enviada", sd["signal_id"])
+                conn.execute(
+                    f"UPDATE signals SET telegram_sent=1 WHERE id IN ({placeholders})",
+                    signal_ids,
+                )
+            total_sent += len(signals)
+            logger.info("[%s] Resumen enviado: %d señales (%d BET, %d REVIEW)",
+                        league,
+                        len(signals),
+                        sum(1 for s in signals if s["status"] == "BET"),
+                        sum(1 for s in signals if s["status"] == "REVIEW"))
         except Exception as e:
-            logger.error("Error enviando señal %d: %s", sd["signal_id"], e)
+            logger.error("[%s] Error enviando resumen: %s", league, e)
 
-    return sent
+    return total_sent
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -330,19 +409,15 @@ def process_callback(callback: dict, db_path: Path,
                   stake if decision == "GO" else None,
                   signal["betplay_odds"] if decision == "GO" else None))
 
-    client.answer_callback(cb_id)
-    if message_id:
-        client.edit_message_reply_markup(chat_id, message_id)
-
+    # Toast de confirmación (aparece 2-3s en Telegram, no ocupa el chat)
     if decision == "GO":
-        client.send_message(
-            chat_id,
-            f"✅ <b>Registrado</b>\n"
-            f"Apostá <b>${stake:,.0f} COP</b> @ {signal['betplay_odds']} en Betplay.",
-            parse_mode="HTML",
-        )
+        client.answer_callback(cb_id, f"✅ Registrado ${stake:,.0f} COP")
+    else:
+        client.answer_callback(cb_id, "❌ Pasado")
 
-    logger.info("Callback %s — señal %d", action, signal_id)
+    # No editamos el teclado para que los otros botones del resumen sigan activos
+
+    logger.info("Callback %s — señal %d — $%s COP", action, signal_id, f"{stake:,.0f}" if stake else "0")
     return True
 
 

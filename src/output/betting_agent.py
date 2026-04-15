@@ -126,12 +126,13 @@ def search_news(
 
     # Llamar a la API
     system = (
-        "Eres un asistente especializado en fútbol europeo. "
-        "Buscás noticias recientes sobre partidos de Bundesliga 2 en alemán e inglés. "
-        "Respondés SOLO con hechos concretos relevantes para apostar: "
-        "lesiones, alineaciones probables, estado de forma, clima. "
-        "Si no encontrás nada relevante, decís 'Sin noticias relevantes'. "
-        "Máximo 3 frases. Siempre en español."
+        "You are a football betting analyst specialized in European football. "
+        "Search recent news (last 48h) from sources like kicker.de, transfermarkt.com, "
+        "bundesliga.com, and major sports outlets. "
+        "Report ONLY concrete facts relevant for betting: injuries, confirmed lineups, "
+        "recent form, suspensions, weather. "
+        "If nothing relevant, say 'Sin noticias relevantes'. "
+        "Max 3 sentences. Always respond in Spanish."
     )
     response = httpx.post(
         "https://api.anthropic.com/v1/messages",
@@ -147,10 +148,7 @@ def search_news(
             "tools":      [{"type": "web_search_20250305", "name": "web_search"}],
             "messages":   [{
                 "role":    "user",
-                "content": (
-                    f"Buscá noticias de las últimas 48 horas sobre: {query}. "
-                    f"Enfocate en lesiones, alineaciones y estado de forma."
-                ),
+                "content": f"Search for news in the last 48 hours about: {query}",
             }],
         },
         timeout=60,
@@ -240,8 +238,10 @@ def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
         }
 
     # 1. Buscar noticias con caché dinámico
-    liga_name  = "Bundesliga 2" if league == "BL2" else "Eredivisie"
-    news_query = f"{home} {away} {liga_name} lesiones alineación"
+    # Query en inglés para capturar fuentes alemanas/holandesas (kicker.de, transfermarkt, etc.)
+    liga_map  = {"BL2": "2. Bundesliga", "NL1": "Eredivisie"}
+    liga_name = liga_map.get(league, league)
+    news_query = f"{home} vs {away} {liga_name} injury lineup team news"
     logger.info("Buscando noticias: %s (%.1fh al kickoff)", news_query, hours_before)
 
     try:
