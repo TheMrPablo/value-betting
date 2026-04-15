@@ -53,17 +53,31 @@ jobs:
           sys.exit(0 if count > 0 else 1)
           " && echo "has_fixtures=true" >> $GITHUB_OUTPUT || echo "has_fixtures=false" >> $GITHUB_OUTPUT
 
-      - name: Scrape odds
+      - name: Scrape odds — BL2
         if: steps.check.outputs.has_fixtures == 'true'
         run: python src/ingestion/odds_scraper.py --league BL2
         env:
           PYTHONPATH: .
 
-      - name: Run value engine
+      - name: Scrape odds — NL1
+        if: steps.check.outputs.has_fixtures == 'true'
+        run: python src/ingestion/odds_scraper.py --league NL1
+        env:
+          PYTHONPATH: .
+        continue-on-error: true
+
+      - name: Run value engine — BL2
         if: steps.check.outputs.has_fixtures == 'true'
         run: python src/engine/value_engine.py --league BL2 --hours 8
         env:
           PYTHONPATH: .
+
+      - name: Run value engine — NL1
+        if: steps.check.outputs.has_fixtures == 'true'
+        run: python src/engine/value_engine.py --league NL1 --hours 8
+        env:
+          PYTHONPATH: .
+        continue-on-error: true
 
       - name: Send pending signals
         if: steps.check.outputs.has_fixtures == 'true'

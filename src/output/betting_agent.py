@@ -535,7 +535,26 @@ if __name__ == "__main__":
         print(f"\n✅ Aprobadas para enviar: {aprobadas}")
         print(f"❌ Descartadas:          {descartadas}\n")
     elif args.weekly:
+        import os
         print("\n📊 Generando revisión semanal...\n")
-        print(weekly_review(db_path))
+        analysis = weekly_review(db_path)
+        print(analysis)
+
+        token   = os.environ.get("TELEGRAM_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if token and chat_id and "Sin suficientes datos" not in analysis:
+            try:
+                httpx.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id":    chat_id,
+                        "text":       f"🤖 <b>Revisión semanal del agente</b>\n\n{analysis}",
+                        "parse_mode": "HTML",
+                    },
+                    timeout=30,
+                )
+                print("✅ Revisión enviada a Telegram.")
+            except Exception as e:
+                logger.warning("No se pudo enviar revisión a Telegram: %s", e)
     else:
         parser.print_help()

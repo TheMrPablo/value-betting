@@ -50,7 +50,7 @@ jobs:
           mkdir -p data/historical
           # Temporadas históricas (IPs de GitHub no están bloqueadas)
           for season in 2122 2223 2324 2425 2526; do
-            for code in D2; do
+            for code in D2 N1; do
               file="data/historical/${code}_${season}.csv"
               if [ ! -f "$file" ] || [ "$season" = "2526" ]; then
                 echo "Descargando ${code}_${season}.csv..."
@@ -65,18 +65,29 @@ jobs:
         env:
           PYTHONPATH: .
 
-      - name: Fetch player stats (FBref)
-        run: python src/ingestion/player_stats.py --league BL2 --season 2024-25
+      - name: Fetch player stats — BL2 (FBref)
+        run: python src/ingestion/player_stats.py --league BL2 --season 2025-26
         env:
           PYTHONPATH: .
         continue-on-error: true   # FBref puede estar caído; el pipeline sigue sin stats
 
-      - name: Build features
+      - name: Fetch player stats — NL1 (FBref)
+        run: python src/ingestion/player_stats.py --league NL1 --season 2025-26
+        env:
+          PYTHONPATH: .
+        continue-on-error: true
+
+      - name: Build features — BL2
         run: python src/features/feature_builder.py --league BL2
         env:
           PYTHONPATH: .
 
-      - name: Train DC model
+      - name: Build features — NL1
+        run: python src/features/feature_builder.py --league NL1
+        env:
+          PYTHONPATH: .
+
+      - name: Train DC model — BL2
         run: |
           python src/models/dixon_coles.py \
             --league BL2 \
@@ -87,18 +98,44 @@ jobs:
         env:
           PYTHONPATH: .
 
-      - name: Train XGBoost model
+      - name: Train DC model — NL1
+        run: |
+          python src/models/dixon_coles.py \
+            --league NL1 \
+            --db data/betting.db \
+            --seasons 2022-23 2023-24 2024-25 2025-26 \
+            --model models/dc_params_NL1.pkl \
+            --hours 168
+        env:
+          PYTHONPATH: .
+
+      - name: Train XGBoost model — BL2
         run: python src/models/xgboost_model.py --league BL2
         env:
           PYTHONPATH: .
 
-      - name: Scrape odds from Betplay
+      - name: Train XGBoost model — NL1
+        run: python src/models/xgboost_model.py --league NL1
+        env:
+          PYTHONPATH: .
+
+      - name: Scrape odds from Betplay — BL2
         run: python src/ingestion/odds_scraper.py --league BL2
         env:
           PYTHONPATH: .
 
-      - name: Run value engine
+      - name: Scrape odds from Betplay — NL1
+        run: python src/ingestion/odds_scraper.py --league NL1
+        env:
+          PYTHONPATH: .
+
+      - name: Run value engine — BL2
         run: python src/engine/value_engine.py --league BL2 --hours 168
+        env:
+          PYTHONPATH: .
+
+      - name: Run value engine — NL1
+        run: python src/engine/value_engine.py --league NL1 --hours 168
         env:
           PYTHONPATH: .
 
