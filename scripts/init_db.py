@@ -134,6 +134,27 @@ def init_db():
         computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )""")
 
+    # --- ESTADÍSTICAS DE JUGADORES (para is_key_player) ---
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS player_stats (
+        id INTEGER PRIMARY KEY,
+        player_name TEXT NOT NULL,
+        team_name TEXT NOT NULL,
+        league TEXT NOT NULL,
+        season TEXT NOT NULL,
+        position TEXT,
+        appearances INTEGER DEFAULT 0,
+        starts INTEGER DEFAULT 0,
+        minutes_played INTEGER DEFAULT 0,
+        goals INTEGER DEFAULT 0,
+        assists INTEGER DEFAULT 0,
+        is_key_attacker INTEGER DEFAULT 0,
+        is_key_keeper INTEGER DEFAULT 0,
+        is_key_player INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(player_name, team_name, league, season)
+    )""")
+
     # --- PREDICCIONES ---
     c.execute("""
     CREATE TABLE IF NOT EXISTS predictions (

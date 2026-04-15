@@ -176,17 +176,17 @@ def search_news(
 SYSTEM_PROMPT = """
 Eres un analista experto en value betting de fútbol europeo, especializado en Bundesliga 2.
 
-Tu trabajo es evaluar señales de apuestas generadas por modelos estadísticos (Dixon-Coles + XGBoost) 
+Tu trabajo es evaluar señales de apuestas generadas por modelos estadísticos (Dixon-Coles + XGBoost)
 y decidir si son apuestas reales o ruido del modelo.
 
 REGLAS PARA DECIDIR:
 
 DESCARTAR si:
-- El edge es > 25%: edges tan altos casi siempre significan que el modelo está desactualizado 
+- El edge es > 25%: edges tan altos casi siempre significan que el modelo está desactualizado
   respecto al mercado, no que hay una oportunidad real.
-- El mercado y el modelo divergen más de 20 puntos porcentuales en probabilidad sin una razón 
+- El mercado y el modelo divergen más de 20 puntos porcentuales en probabilidad sin una razón
   clara (lesión masiva, clima extremo, cambio de entrenador).
-- Las noticias muestran que algún equipo tiene 3+ titulares fuera por lesión.
+- Las noticias muestran que algún equipo tiene 3+ JUGADORES CLAVE fuera por lesión.
 - Es la primera o última jornada de la temporada.
 
 RECOMENDAR si:
@@ -194,6 +194,15 @@ RECOMENDAR si:
 - Las noticias no muestran nada alarmante.
 - El modelo y el mercado están relativamente cerca (diferencia < 15 puntos).
 - Hay alguna razón contextual que explique el edge (equipo en buena racha, rival cansado, etc.)
+
+SOBRE LESIONES — MUY IMPORTANTE:
+- Solo son relevantes las lesiones de JUGADORES CLAVE que aparecen en la sección "JUGADORES CLAVE"
+  de cada equipo (jugadores con ≥60% de minutos y ≥70% de titularidades en la temporada).
+- Si el jugador lesionado NO aparece en la lista de jugadores clave, IGNORAR esa lesión completamente.
+  Jugadores que apenas juegan no impactan los goles del partido.
+- Si 3 o más JUGADORES CLAVE de un equipo están fuera → señal de alarma real.
+- Si "No disponible" aparece en jugadores clave → evaluar lesiones con cautela sin poder
+  determinar importancia real.
 
 FORMATO DE RESPUESTA — responde SOLO con este JSON exacto:
 {
@@ -250,7 +259,37 @@ def analyze_signal(signal: dict, db_path: Path = DB_PATH) -> dict:
         logger.warning("Error buscando noticias: %s", e)
         news = "Sin noticias disponibles."
 
-    # 2. Construir contexto
+    # 2. Obtener jugadores clave de la DB
+    key_players_section = ""
+    try:
+        from src.ingestion.player_stats import get_key_players_for_team
+        home_keys = get_key_players_for_team(home, league, db_path)
+        away_keys = get_key_players_for_team(away, league, db_path)
+
+        def _format_key_players(team_name: str, keys: dict) -> str:
+            if not keys["found"]:
+                return f"JUGADORES CLAVE {team_name.upper()}: No disponible (ejecutar player_stats.py)"
+            attackers = ", ".join(keys["attackers"]) if keys["attackers"] else "Ninguno identificado"
+            return (
+                f"JUGADORES CLAVE {team_name.upper()}:\n"
+                f"  Atacantes/mediapuntas: {attackers}\n"
+                f"  Portero: {keys['keeper']}"
+            )
+
+        key_players_section = (
+            "\n" + _format_key_players(home, home_keys) +
+            "\n" + _format_key_players(away, away_keys)
+        )
+        logger.info(
+            "Jugadores clave cargados — %s: %d atacantes | %s: %d atacantes",
+            home, len(home_keys.get("attackers", [])),
+            away, len(away_keys.get("attackers", [])),
+        )
+    except Exception as e:
+        logger.warning("No se pudo obtener jugadores clave: %s", e)
+        key_players_section = "\nJUGADORES CLAVE: No disponible"
+
+    # 3. Construir contexto
     sel_label   = "Over 2.5 goles" if sel == "over" else "Under 2.5 goles"
     divergencia = abs(prob_dc - implied_prob) * 100
 
@@ -264,6 +303,7 @@ SEÑAL A ANALIZAR:
 - Modelo XGBoost: {prob_xgb*100:.1f}% de probabilidad
 - Edge estimado: +{edge*100:.1f}%
 - Divergencia modelo vs mercado: {divergencia:.1f} puntos porcentuales
+{key_players_section}
 
 NOTICIAS RECIENTES:
 {news}

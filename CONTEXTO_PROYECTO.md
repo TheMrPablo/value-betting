@@ -116,13 +116,41 @@ El agente gastó $10 USD en créditos porque había señales duplicadas (36 en v
 - Antes: fallback hardcodeado a 150K COP cuando no había snapshots
 - Fix: lee `config/bankroll.yaml` (500K) antes del hardcode
 
-**4. Modelo desactualizado** (`src/output/betting_agent.py`)
-- `claude-sonnet-4-5` → `claude-sonnet-4-6`
+**4. Modelo del agente** (`src/output/betting_agent.py`)
+- `claude-sonnet-4-5` → `claude-haiku-4-5-20251001` (~20x más barato, suficiente para análisis estructurado)
 
 **5. UNIQUE constraints** (`scripts/init_db.py`)
 - `signals(fixture_id, market, selection)`
 - `predictions(fixture_id, model, market, selection)`
 - Solo aplica a DBs nuevas; DBs existentes usan el smart upsert
+
+**6. Venue-split features** (`src/features/feature_builder.py`, `src/models/xgboost_model.py`)
+- XGBoost pasó de 12 a **16 features**: se agregaron `home_goals_home_avg_5`, `home_conceded_home_avg_5`, `away_goals_away_avg_5`, `away_conceded_away_avg_5`
+- `init_db.py` incluye las 4 columnas nuevas en CREATE TABLE + ALTER TABLE migration para DBs existentes
+
+**7. Pipeline horas** (`.github/workflows/daily_pipeline.yml`)
+- `--hours 720` → `--hours 168` en Dixon-Coles y value engine (ventana de 7 días, evita acumulación de predictions)
+
+**8. `init_db.py` siempre corre** (`.github/workflows/daily_pipeline.yml`)
+- Antes: `if [ ! -f data/betting.db ]` — si el artifact viejo existía, `init_db.py` no corría y el schema quedaba desactualizado
+- Fix: `init_db.py` corre incondicionalmente (es idempotente: CREATE TABLE IF NOT EXISTS + ALTER TABLE)
+
+**9. Prevención de runs concurrentes** (ambos workflows)
+- Concurrency group `betting-pipeline` compartido: si `daily_pipeline` está corriendo, `prematch_scan` se cancela
+- El agente se eliminó de `prematch_scan` — solo corre en `daily_pipeline` (una vez por día)
+
+**10. Hard cap de señales** (`src/output/betting_agent.py`)
+- `process_pending_signals()` lanza `RuntimeError` si encuentra >8 señales pendientes
+- Evita gasto runaway de API ante cualquier bug de duplicados futuro
+
+**11. Telegram rediseñado** (`src/output/telegram_bot.py`)
+- Antes: N mensajes individuales por señal
+- Ahora: 1 mensaje resumen por liga con secciones ✅ APOSTAR / 🟡 A TU CRITERIO / 📝 Contexto
+- Teclado inline con botones GO/HALF (toast al presionar, no edita el mensaje)
+
+**12. News query en inglés** (`src/output/betting_agent.py`)
+- Antes: query en español → mal coverage de fuentes alemanas
+- Fix: `"{home} vs {away} {liga_name} injury lineup team news"` con `liga_map = {"BL2": "2. Bundesliga"}`
 
 ---
 
@@ -130,28 +158,27 @@ El agente gastó $10 USD en créditos porque había señales duplicadas (36 en v
 
 - ✅ Burn-in activo (primeras 50 apuestas a 1/8 Kelly)
 - ✅ BL2 (Bundesliga 2) operativa
-- ✅ Pipeline corrió exitosamente en modo SIN agente (`USE_AGENT=false`)
-- ✅ `USE_AGENT=false` seteado como variable de repo (hasta confirmar que no hay más duplicados)
+- ✅ Pipeline y agente probados exitosamente (`USE_AGENT=true`)
+- ✅ XGBoost con 16 features (incluye venue-split form)
+- ✅ Señales sin duplicados (smart upsert + UNIQUE constraints)
+- ✅ Runs concurrentes prevenidos (concurrency groups)
 - 🔲 NL1 (Eredivisie) — configurada en `leagues.yaml` pero el pipeline solo corre BL2
-- 🔲 Lesiones — campos en `match_features` pero sin fuente de datos (Fase 2)
-- 🔲 Clima — tabla `weather` creada pero sin integración (Fase 2, Yr.no API)
-- 🔲 Incentivos asimétricos — filtro placeholder en `filters.py` (Fase 2)
+- 🔲 Lesiones con datos reales — campos `is_key_attacker/keeper` en schema pero sin fuente de datos (próximo paso)
+- 🔲 Clima — tabla `weather` creada pero sin integración (Yr.no API, Fase 2)
 - 🔲 `performance_snapshots` — tabla creada pero sin código que la poblee automáticamente
-- 🔲 Bankroll snapshot semanal — necesita un step en `weekly_report.yml`
+- 🔲 CLV (closing line value) — tabla `results.closing_line_value` pero sin cálculo
 
 ---
 
 ## Cosas que faltan / próximos pasos sugeridos
 
-1. **Poblar `performance_snapshots` automáticamente** — agregar step en `weekly_report.yml` que calcule ROI, Brier score y bankroll actual y lo inserte en la tabla. Ahora `load_bankroll()` siempre lee el yaml porque nunca hay snapshots.
+1. **Minutos jugados por jugador** — integrar API-Football para poblar tabla `player_stats`, calcular `is_key_player` (titularidad >50% partidos), y usar en el agente + XGBoost. Ver plan detallado abajo.
 
-2. **Reactivar el agente** — cuando estés seguro de que no hay más duplicados, cambiar `USE_AGENT=true` en GitHub Variables.
+2. **Poblar `performance_snapshots` automáticamente** — agregar step en `weekly_report.yml`.
 
-3. **Activar NL1** — el workflow solo corre BL2. Para agregar Eredivisie: duplicar los steps con `--league NL1` o parametrizar el loop en el workflow.
+3. **Activar NL1** — duplicar los steps del workflow con `--league NL1` o parametrizar.
 
-4. **Resolver warning de Node.js 20** en los workflows (minoría, no afecta funcionalidad hasta sep 2026).
-
-5. **Test de los callbacks de Telegram** — verificar que GO/SKIP/HALF se registran correctamente en la tabla `bets`.
+4. **Test callbacks Telegram** — verificar que GO/SKIP/HALF se registran en tabla `bets`.
 
 ---
 

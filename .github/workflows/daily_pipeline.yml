@@ -65,6 +65,12 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Fetch player stats (FBref)
+        run: python src/ingestion/player_stats.py --league BL2 --season 2024-25
+        env:
+          PYTHONPATH: .
+        continue-on-error: true   # FBref puede estar caído; el pipeline sigue sin stats
+
       - name: Build features
         run: python src/features/feature_builder.py --league BL2
         env:
