@@ -201,47 +201,52 @@ def load_upcoming_fixtures(
 
 def load_odds(db_path: Path, fixture_id: int) -> dict:
     """Carga las odds más recientes de Betplay para un fixture."""
-    query = """
-        SELECT selection, odds_decimal, overround_pct, captured_at
-        FROM odds
-        WHERE fixture_id = ?
-          AND bookmaker  = 'betplay'
-          AND market     = 'ou25'
-        ORDER BY captured_at DESC
-        LIMIT 2
-    """
+    result = {"odds_over": None, "odds_under": None, "overround_pct": None}
+
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(query, [fixture_id]).fetchall()
+        over_row = conn.execute("""
+            SELECT odds_decimal, overround_pct FROM odds
+            WHERE fixture_id = ? AND bookmaker = 'betplay' AND market = 'ou25' AND selection = 'over'
+            ORDER BY captured_at DESC LIMIT 1
+        """, [fixture_id]).fetchone()
+        under_row = conn.execute("""
+            SELECT odds_decimal, overround_pct FROM odds
+            WHERE fixture_id = ? AND bookmaker = 'betplay' AND market = 'ou25' AND selection = 'under'
+            ORDER BY captured_at DESC LIMIT 1
+        """, [fixture_id]).fetchone()
 
-    result = {"odds_over": None, "odds_under": None, "overround_pct": None}
-    for row in rows:
-        if row["selection"] == "over":
-            result["odds_over"] = row["odds_decimal"]
-        elif row["selection"] == "under":
-            result["odds_under"] = row["odds_decimal"]
-        if row["overround_pct"] is not None:
-            result["overround_pct"] = row["overround_pct"] / 100  # viene en %
+    if over_row:
+        result["odds_over"] = over_row["odds_decimal"]
+        if over_row["overround_pct"] is not None:
+            result["overround_pct"] = over_row["overround_pct"] / 100  # viene en %
+    if under_row:
+        result["odds_under"] = under_row["odds_decimal"]
+        if under_row["overround_pct"] is not None and result["overround_pct"] is None:
+            result["overround_pct"] = under_row["overround_pct"] / 100
 
     # Si no hay odds de Betplay, usar las históricas de bet365 como referencia
     if result["odds_over"] is None:
-        query_hist = """
-            SELECT selection, odds_decimal, overround_pct
-            FROM odds
-            WHERE fixture_id = ? AND market = 'ou25'
-            ORDER BY captured_at DESC
-            LIMIT 2
-        """
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            rows = conn.execute(query_hist, [fixture_id]).fetchall()
-        for row in rows:
-            if row["selection"] == "over" and result["odds_over"] is None:
-                result["odds_over"] = row["odds_decimal"]
-            elif row["selection"] == "under" and result["odds_under"] is None:
-                result["odds_under"] = row["odds_decimal"]
-            if row["overround_pct"] is not None and result["overround_pct"] is None:
-                result["overround_pct"] = row["overround_pct"] / 100
+            over_hist = conn.execute("""
+                SELECT odds_decimal, overround_pct FROM odds
+                WHERE fixture_id = ? AND market = 'ou25' AND selection = 'over'
+                ORDER BY captured_at DESC LIMIT 1
+            """, [fixture_id]).fetchone()
+            under_hist = conn.execute("""
+                SELECT odds_decimal, overround_pct FROM odds
+                WHERE fixture_id = ? AND market = 'ou25' AND selection = 'under'
+                ORDER BY captured_at DESC LIMIT 1
+            """, [fixture_id]).fetchone()
+        if over_hist:
+            result["odds_over"] = over_hist["odds_decimal"]
+            if over_hist["overround_pct"] is not None and result["overround_pct"] is None:
+                result["overround_pct"] = over_hist["overround_pct"] / 100
+        if under_hist and result["odds_under"] is None:
+            result["odds_under"] = under_hist["odds_decimal"]
+            if under_hist["overround_pct"] is not None and result["overround_pct"] is None:
+                result["overround_pct"] = under_hist["overround_pct"] / 100
 
     return result
 
