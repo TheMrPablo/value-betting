@@ -444,6 +444,83 @@ def listen_for_responses(db_path: Path, client: TelegramClient, chat_id: str) ->
 # Resumen semanal
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _load_initial_bankroll() -> float:
+    """Lee el bankroll inicial desde config/bankroll.yaml."""
+    try:
+        import yaml
+        p = Path("config/bankroll.yaml")
+        if p.exists():
+            with open(p) as f:
+                data = yaml.safe_load(f)
+            return float(data.get("current_bankroll_cop", 500_000))
+    except Exception:
+        pass
+    return 500_000.0
+
+
+def _save_performance_snapshot(db_path: Path, stats: dict) -> None:
+    """Persiste un snapshot semanal en performance_snapshots."""
+    from datetime import date
+    today = date.today().isoformat()
+
+    # Brier score: promedio de (prob_ensemble - resultado)^2 para señales apostadas
+    brier = None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("""
+                SELECT s.prob_ensemble, f.over_25, s.selection
+                FROM signals s
+                JOIN fixtures f ON s.fixture_id = f.id
+                JOIN bets b ON b.signal_id = s.id
+                WHERE b.decided_at >= datetime('now', '-7 days')
+                  AND b.user_decision = 'GO'
+                  AND f.status = 'finished'
+                  AND f.over_25 IS NOT NULL
+            """).fetchall()
+        if rows:
+            sq_errors = []
+            for prob, over25, sel in rows:
+                outcome = 1 if (sel == "over" and over25 == 1) or (sel == "under" and over25 == 0) else 0
+                sq_errors.append((prob - outcome) ** 2)
+            brier = sum(sq_errors) / len(sq_errors)
+    except Exception:
+        pass
+
+    avg_edge = stats.get("avg_edge")
+    if avg_edge is None:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                row = conn.execute("""
+                    SELECT AVG(s.edge_pct)
+                    FROM signals s JOIN bets b ON b.signal_id = s.id
+                    WHERE b.decided_at >= datetime('now', '-7 days')
+                      AND b.user_decision = 'GO'
+                """).fetchone()
+            avg_edge = row[0] if row and row[0] is not None else 0.0
+        except Exception:
+            avg_edge = 0.0
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO performance_snapshots
+                (snapshot_date, league, total_bets, wins, losses,
+                 roi_pct, pnl_cop, bankroll, brier_score, avg_edge)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            today,
+            stats.get("total_bets", 0),
+            stats.get("wins", 0),
+            stats.get("losses", 0),
+            stats.get("roi_pct", 0.0),
+            stats.get("pnl_cop", 0.0),
+            stats.get("bankroll", 0.0),
+            brier,
+            avg_edge,
+        ])
+    logger.info("Snapshot guardado para %s: ROI %.1f%% | Bankroll $%,.0f",
+                today, stats.get("roi_pct", 0), stats.get("bankroll", 0))
+
+
 def send_weekly_summary(db_path: Path, client: TelegramClient, chat_id: str) -> None:
     with sqlite3.connect(db_path) as conn:
         bets = conn.execute("""
@@ -452,17 +529,20 @@ def send_weekly_summary(db_path: Path, client: TelegramClient, chat_id: str) -> 
             LEFT JOIN results r ON r.bet_id=b.id
             WHERE b.decided_at >= datetime('now', '-7 days') AND b.user_decision='GO'
         """).fetchall()
-        bankroll = conn.execute("""
-            SELECT COALESCE(
-                (SELECT bankroll FROM performance_snapshots ORDER BY snapshot_date DESC LIMIT 1),
-                150000)
-        """).fetchone()[0]
+        last_snapshot = conn.execute("""
+            SELECT bankroll FROM performance_snapshots
+            ORDER BY snapshot_date DESC LIMIT 1
+        """).fetchone()
+
+    # Bankroll: último snapshot → bankroll.yaml → 500K fallback
+    prev_bankroll = last_snapshot[0] if last_snapshot else _load_initial_bankroll()
 
     total = len(bets)
     wins  = sum(1 for b in bets if b[1] == "win")
     pnl   = sum(b[2] or 0 for b in bets)
     stk   = sum(b[0] or 0 for b in bets)
     roi   = (pnl / stk * 100) if stk > 0 else 0.0
+    new_bankroll = prev_bankroll + pnl
 
     by_league: dict = {}
     for b in bets:
@@ -476,13 +556,13 @@ def send_weekly_summary(db_path: Path, client: TelegramClient, chat_id: str) -> 
         s = by_league[lg]["staked"]
         by_league[lg]["roi_pct"] = (by_league[lg]["pnl"] / s * 100) if s > 0 else 0.0
 
-    from datetime import date
     stats = {
         "total_bets": total, "wins": wins, "losses": total - wins,
-        "pnl_cop": pnl, "roi_pct": roi, "bankroll": bankroll,
+        "pnl_cop": pnl, "roi_pct": roi, "bankroll": new_bankroll,
         "by_league": by_league,
     }
     client.send_message(chat_id, format_weekly_summary(stats), parse_mode="HTML")
+    _save_performance_snapshot(db_path, stats)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

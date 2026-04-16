@@ -66,7 +66,7 @@ jobs:
           PYTHONPATH: .
 
       - name: Fetch player stats (FBref)
-        run: python src/ingestion/player_stats.py --league BL2 --season 2024-25
+        run: python src/ingestion/player_stats.py --league BL2 --season 2025-26
         env:
           PYTHONPATH: .
         continue-on-error: true   # FBref puede estar caído; el pipeline sigue sin stats
@@ -99,6 +99,13 @@ jobs:
 
       - name: Run value engine
         run: python src/engine/value_engine.py --league BL2 --hours 168
+        env:
+          PYTHONPATH: .
+
+      - name: Reset low-confidence discards for re-analysis
+        run: |
+          python scripts/reset_signal.py --all-low-confidence --db data/betting.db \
+            || echo "Sin señales de baja confianza para resetear"
         env:
           PYTHONPATH: .
 

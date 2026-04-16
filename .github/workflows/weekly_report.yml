@@ -6,6 +6,11 @@ on:
     - cron: '0 13 * * 1'
   workflow_dispatch:
 
+# Grupo propio: no bloquea ni es bloqueado por betting-pipeline
+concurrency:
+  group: weekly-report
+  cancel-in-progress: false
+
 jobs:
   report:
     runs-on: ubuntu-latest
@@ -19,6 +24,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
@@ -29,17 +40,29 @@ jobs:
           path: data/
         continue-on-error: true
 
-      - name: Send weekly summary
+      - name: Initialize / migrate DB
+        run: python scripts/init_db.py
+        env:
+          PYTHONPATH: .
+
+      - name: Send weekly summary (saves performance snapshot)
         run: python src/output/telegram_bot.py --weekly
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Agent weekly review
+      - name: Agent weekly review (sends analysis to Telegram)
         run: python src/output/betting_agent.py --weekly
         env:
           PYTHONPATH: .
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - name: Upload DB artifact (persists new snapshot)
+        uses: actions/upload-artifact@v4
+        with:
+          name: betting-db
+          path: data/betting.db
+          retention-days: 7

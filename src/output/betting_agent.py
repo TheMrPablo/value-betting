@@ -200,9 +200,10 @@ SOBRE LESIONES — MUY IMPORTANTE:
   de cada equipo (jugadores con ≥60% de minutos y ≥70% de titularidades en la temporada).
 - Si el jugador lesionado NO aparece en la lista de jugadores clave, IGNORAR esa lesión completamente.
   Jugadores que apenas juegan no impactan los goles del partido.
-- Si 3 o más JUGADORES CLAVE de un equipo están fuera → señal de alarma real.
-- Si "No disponible" aparece en jugadores clave → evaluar lesiones con cautela sin poder
-  determinar importancia real.
+- Si 3 o más JUGADORES CLAVE de un equipo están fuera → señal de alarma real → DESCARTAR.
+- Si "No disponible" aparece en jugadores clave → NO es razón para descartar. Evaluar
+  las noticias normalmente: solo descartar si las noticias mencionan explícitamente que
+  titulares confirmados o figuras del equipo están fuera.
 
 FORMATO DE RESPUESTA — responde SOLO con este JSON exacto:
 {
@@ -316,13 +317,27 @@ NOTICIAS RECIENTES:
     try:
         response_text = call_claude(SYSTEM_PROMPT, context, api_key)
         response_text = response_text.strip()
+
+        # Extraer JSON robusto: soporta ```json ... ```, ``` ... ```, o texto plano
         if "```" in response_text:
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
+            parts = response_text.split("```")
+            # parts[1] es el contenido del bloque de código
+            if len(parts) >= 2:
+                response_text = parts[1].lstrip("json").strip()
+        # Buscar el primer { y el último } en caso de texto antes/después del JSON
+        start = response_text.find("{")
+        end   = response_text.rfind("}") + 1
+        if start != -1 and end > start:
+            response_text = response_text[start:end]
+
         result = json.loads(response_text)
+
+        # Validar campos mínimos; si faltan, usar defaults seguros
+        if "recomendar" not in result:
+            raise ValueError(f"Campo 'recomendar' ausente en respuesta: {response_text}")
+
     except Exception as e:
-        logger.error("Error en análisis del agente: %s", e)
+        logger.error("Error parseando respuesta del agente: %s | Raw: %.200s", e, response_text if 'response_text' in dir() else "")
         result = {
             "recomendar": False,
             "razon":      "No se pudo analizar correctamente — descartando por precaución.",
@@ -535,7 +550,26 @@ if __name__ == "__main__":
         print(f"\n✅ Aprobadas para enviar: {aprobadas}")
         print(f"❌ Descartadas:          {descartadas}\n")
     elif args.weekly:
+        import os
         print("\n📊 Generando revisión semanal...\n")
-        print(weekly_review(db_path))
+        analysis = weekly_review(db_path)
+        print(analysis)
+
+        token   = os.environ.get("TELEGRAM_TOKEN", "")
+        chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
+        if token and chat_id and "Sin suficientes datos" not in analysis:
+            try:
+                httpx.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={
+                        "chat_id":    chat_id,
+                        "text":       f"🤖 <b>Revisión semanal del agente</b>\n\n{analysis}",
+                        "parse_mode": "HTML",
+                    },
+                    timeout=30,
+                )
+                print("✅ Revisión enviada a Telegram.")
+            except Exception as e:
+                logger.warning("No se pudo enviar revisión a Telegram: %s", e)
     else:
         parser.print_help()
