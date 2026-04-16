@@ -317,13 +317,27 @@ NOTICIAS RECIENTES:
     try:
         response_text = call_claude(SYSTEM_PROMPT, context, api_key)
         response_text = response_text.strip()
+
+        # Extraer JSON robusto: soporta ```json ... ```, ``` ... ```, o texto plano
         if "```" in response_text:
-            response_text = response_text.split("```")[1]
-            if response_text.startswith("json"):
-                response_text = response_text[4:]
+            parts = response_text.split("```")
+            # parts[1] es el contenido del bloque de código
+            if len(parts) >= 2:
+                response_text = parts[1].lstrip("json").strip()
+        # Buscar el primer { y el último } en caso de texto antes/después del JSON
+        start = response_text.find("{")
+        end   = response_text.rfind("}") + 1
+        if start != -1 and end > start:
+            response_text = response_text[start:end]
+
         result = json.loads(response_text)
+
+        # Validar campos mínimos; si faltan, usar defaults seguros
+        if "recomendar" not in result:
+            raise ValueError(f"Campo 'recomendar' ausente en respuesta: {response_text}")
+
     except Exception as e:
-        logger.error("Error en análisis del agente: %s", e)
+        logger.error("Error parseando respuesta del agente: %s | Raw: %.200s", e, response_text if 'response_text' in dir() else "")
         result = {
             "recomendar": False,
             "razon":      "No se pudo analizar correctamente — descartando por precaución.",
