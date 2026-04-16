@@ -200,9 +200,10 @@ SOBRE LESIONES — MUY IMPORTANTE:
   de cada equipo (jugadores con ≥60% de minutos y ≥70% de titularidades en la temporada).
 - Si el jugador lesionado NO aparece en la lista de jugadores clave, IGNORAR esa lesión completamente.
   Jugadores que apenas juegan no impactan los goles del partido.
-- Si 3 o más JUGADORES CLAVE de un equipo están fuera → señal de alarma real.
-- Si "No disponible" aparece en jugadores clave → evaluar lesiones con cautela sin poder
-  determinar importancia real.
+- Si 3 o más JUGADORES CLAVE de un equipo están fuera → señal de alarma real → DESCARTAR.
+- Si "No disponible" aparece en jugadores clave → NO es razón para descartar. Evaluar
+  las noticias normalmente: solo descartar si las noticias mencionan explícitamente que
+  titulares confirmados o figuras del equipo están fuera.
 
 FORMATO DE RESPUESTA — responde SOLO con este JSON exacto:
 {

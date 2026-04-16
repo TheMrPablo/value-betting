@@ -102,6 +102,13 @@ jobs:
         env:
           PYTHONPATH: .
 
+      - name: Reset low-confidence discards for re-analysis
+        run: |
+          python scripts/reset_signal.py --all-low-confidence --db data/betting.db \
+            || echo "Sin señales de baja confianza para resetear"
+        env:
+          PYTHONPATH: .
+
       - name: Agent analysis and send signals
         run: |
           # USE_AGENT=true  → el agente analiza y puede descartar señales antes de enviar
