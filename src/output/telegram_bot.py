@@ -303,7 +303,7 @@ def send_pending_signals(db_path: Path, client: TelegramClient, chat_id: str) ->
                    f.kickoff_utc
             FROM signals s
             JOIN fixtures f ON s.fixture_id = f.id
-            WHERE s.telegram_sent = 0 AND s.status IN ('BET', 'REVIEW')
+            WHERE s.telegram_sent = -1 AND s.status IN ('BET', 'REVIEW')
             ORDER BY
                 CASE WHEN s.status = 'BET' THEN 0 ELSE 1 END,
                 f.kickoff_utc ASC

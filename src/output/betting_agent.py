@@ -503,15 +503,18 @@ def process_pending_signals(db_path: Path = DB_PATH) -> tuple[int, int]:
                     existing_flags = json.loads(sig["flags"] or "[]")
                 except Exception:
                     pass
-                conn.execute("UPDATE signals SET flags = ? WHERE id = ?", [
-                    json.dumps({
-                        "flags":            existing_flags,
-                        "agent_analysis":   result.get("razon", ""),
-                        "agent_news":       result.get("news", ""),
-                        "agent_confidence": result.get("confianza", ""),
-                    }),
-                    sig["id"],
-                ])
+                conn.execute(
+                    "UPDATE signals SET telegram_sent = -1, flags = ? WHERE id = ?",
+                    [
+                        json.dumps({
+                            "flags":            existing_flags,
+                            "agent_analysis":   result.get("razon", ""),
+                            "agent_news":       result.get("news", ""),
+                            "agent_confidence": result.get("confianza", ""),
+                        }),
+                        sig["id"],
+                    ],
+                )
                 aprobadas += 1
                 logger.info("✅ Señal %d APROBADA: %s", sig["id"], result.get("razon"))
             else:

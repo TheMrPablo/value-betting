@@ -574,8 +574,8 @@ class ValueEngine:
 
                 if existing:
                     sig_id, sent = existing
-                    if sent > 0:
-                        # Ya fue enviada o descartada — no sobreescribir
+                    if sent != 0:
+                        # Aprobada (-1), enviada (1), o descartada (2) — no sobreescribir
                         skipped += 1
                         continue
                     # Pendiente (telegram_sent=0) — actualizar con datos frescos
