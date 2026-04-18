@@ -230,17 +230,23 @@ def load_odds(db_path: Path, fixture_id: int) -> dict:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
             over_hist = conn.execute("""
-                SELECT odds_decimal, overround_pct FROM odds
+                SELECT odds_decimal, overround_pct, bookmaker FROM odds
                 WHERE fixture_id = ? AND market = 'ou25' AND selection = 'over'
                 ORDER BY captured_at DESC LIMIT 1
             """, [fixture_id]).fetchone()
             under_hist = conn.execute("""
-                SELECT odds_decimal, overround_pct FROM odds
+                SELECT odds_decimal, overround_pct, bookmaker FROM odds
                 WHERE fixture_id = ? AND market = 'ou25' AND selection = 'under'
                 ORDER BY captured_at DESC LIMIT 1
             """, [fixture_id]).fetchone()
         if over_hist:
-            result["odds_over"] = over_hist["odds_decimal"]
+            result["odds_over"]    = over_hist["odds_decimal"]
+            result["odds_source"]  = over_hist["bookmaker"]  # "bet365_historical"
+            logger.warning(
+                "Fixture %d: sin odds Betplay en vivo — usando %s (%.3f). "
+                "Cuota puede estar desactualizada.",
+                fixture_id, over_hist["bookmaker"], over_hist["odds_decimal"],
+            )
             if over_hist["overround_pct"] is not None and result["overround_pct"] is None:
                 result["overround_pct"] = over_hist["overround_pct"] / 100
         if under_hist and result["odds_under"] is None:
@@ -404,9 +410,10 @@ class ValueEngine:
 
         # Odds
         odds = load_odds(self.db_path, fid)
-        odds_over  = odds.get("odds_over")
-        odds_under = odds.get("odds_under")
-        overround  = odds.get("overround_pct") or 0.0
+        odds_over    = odds.get("odds_over")
+        odds_under   = odds.get("odds_under")
+        overround    = odds.get("overround_pct") or 0.0
+        odds_source  = odds.get("odds_source", "betplay")  # "betplay" | "bet365_historical"
 
         if odds_over is None or odds_under is None:
             logger.debug("Fixture %d sin odds disponibles. Saltando.", fid)
@@ -536,7 +543,10 @@ class ValueEngine:
             flags_detail    = [
                 {"code": f.code, "message": f.message, "severity": f.severity}
                 for f in filter_result.flags
-            ],
+            ] + (
+                [{"code": "ODDS_HISTORICAS", "message": "⚠️ Odds de bet365 histórico — sin cuota Betplay en vivo", "severity": "warning"}]
+                if odds_source != "betplay" else []
+            ),
             generated_at    = datetime.utcnow().isoformat(),
             bankroll_snapshot = bankroll,
         )

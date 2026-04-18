@@ -183,34 +183,48 @@ class KambiClient:
         odds_over  = None
         odds_under = None
 
+        # Candidatos encontrados para debug (líneas distintas a 2.5)
+        lines_found: set[int] = set()
+
         for offer in bet_offers:
             criterion = offer.get("criterion", {})
             label     = criterion.get("label", "")
 
             # Buscar "Total de goles" (tiempo completo, no por equipo ni parte)
-            if "Total de goles" not in label:
+            # También aceptar "Total Goals" (inglés) y "Goles" como fallback
+            is_total_goals = (
+                "Total de goles" in label
+                or "total goals" in label.lower()
+                or ("goles" in label.lower() and "equipo" not in label.lower())
+            )
+            if not is_total_goals:
                 continue
-            # Excluir mercados de equipo individual o partes
-            if any(x in label for x in ["1.ª parte", "2.ª parte", "1ª parte", "2ª parte",
-                                          "Elversberg", "Karlsruher", "equipo"]):
+            # Excluir mercados de partes del partido
+            if any(x in label for x in ["1.ª parte", "2.ª parte", "1ª parte", "2ª parte", "parte"]):
                 continue
 
-            # Buscar la línea 2.5 (en Kambi viene como 2500 en milésimas)
             outcomes = offer.get("outcomes", [])
             for outcome in outcomes:
                 line = outcome.get("line", 0)
+                lines_found.add(line)
                 if line != 2500:
                     continue
                 outcome_label = outcome.get("label", "").lower()
                 odds_decimal  = outcome.get("odds", 0) / 1000  # Kambi usa milésimas
 
-                if "más" in outcome_label or "over" in outcome_label:
+                if "más" in outcome_label or "over" in outcome_label or "mas" in outcome_label:
                     odds_over = round(odds_decimal, 3)
                 elif "menos" in outcome_label or "under" in outcome_label:
                     odds_under = round(odds_decimal, 3)
 
         if odds_over is None or odds_under is None:
-            logger.debug("Evento %d: sin cuotas O/U 2.5", event_id)
+            if lines_found:
+                logger.info(
+                    "Evento %d: sin línea 2500 para O/U 2.5. Líneas disponibles: %s",
+                    event_id, sorted(lines_found),
+                )
+            else:
+                logger.debug("Evento %d: sin mercado 'Total de goles' disponible", event_id)
             return None
 
         overround = round((1 / odds_over + 1 / odds_under - 1) * 100, 2)
@@ -280,6 +294,31 @@ def find_fixture_id(
         """, [home_db, away_db]).fetchone()
 
     return row[0] if row else None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Actualización de kickoff
+# ──────────────────────────────────────────────────────────────────────────────
+
+def update_fixture_kickoff(db_path: Path, fixture_id: int, kickoff_kambi: str) -> None:
+    """
+    Actualiza kickoff_utc en la DB con la hora real de Kambi (en UTC).
+    Solo actualiza si el valor guardado es medianoche (proviene de CSV sin hora).
+    """
+    try:
+        kickoff_dt = datetime.fromisoformat(kickoff_kambi.replace("Z", "+00:00"))
+        kickoff_utc = kickoff_dt.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            UPDATE fixtures
+            SET kickoff_utc = ?
+            WHERE id = ?
+              AND (kickoff_utc LIKE '% 00:00:00' OR kickoff_utc != ?)
+              AND status = 'scheduled'
+        """, [kickoff_utc, fixture_id, kickoff_utc])
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -415,6 +454,10 @@ def run(
                 continue
 
             stats["fixtures_found"] += 1
+
+            # Actualizar kickoff con la hora exacta de Kambi (el CSV solo tiene fecha)
+            if not dry_run:
+                update_fixture_kickoff(db_path, fixture_id, kickoff)
 
             # Calcular horas hasta el kickoff
             try:

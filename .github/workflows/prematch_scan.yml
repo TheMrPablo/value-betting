@@ -89,9 +89,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Upload DB artifact
-        if: steps.check.outputs.has_fixtures == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: betting-db
           path: data/betting.db
-          retention-days: 1
+          retention-days: 7
