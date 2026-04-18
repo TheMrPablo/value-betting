@@ -20,8 +20,9 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -55,8 +56,46 @@ def season_code_to_label(code: str) -> str:
     return f"20{code[:2]}-{code[2:]}"
 
 
+# Zona horaria de los equipos locales (para conversión a UTC)
+LEAGUE_TZ = {
+    "BL2": ZoneInfo("Europe/Berlin"),   # Bundesliga 2 → CET/CEST
+    "NL1": ZoneInfo("Europe/Amsterdam"),  # Eredivisie → CET/CEST
+}
+
+
+def parse_kickoff_utc(date_str: str, time_str: str | None, league_tz: ZoneInfo | None) -> str | None:
+    """
+    Parsea fecha + hora local → ISO timestamp UTC.
+    Si no hay hora, usa 12:00 local como estimado neutro (≈ medianoche UTC en verano).
+    """
+    date_clean = str(date_str).strip()
+    for fmt in ["%d/%m/%y", "%d/%m/%Y"]:
+        try:
+            d = datetime.strptime(date_clean, fmt)
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+
+    # Intentar parsear hora local (formato HH:MM)
+    h, m = 12, 0
+    if time_str:
+        t = str(time_str).strip()
+        if ":" in t and len(t) >= 4:
+            try:
+                parts = t.split(":")
+                h, m = int(parts[0]), int(parts[1][:2])
+            except (ValueError, IndexError):
+                pass
+
+    local_dt = d.replace(hour=h, minute=m, second=0, tzinfo=league_tz)
+    utc_dt   = local_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def parse_date(date_str: str) -> str | None:
-    """Parsea fechas DD/MM/YY o DD/MM/YYYY → ISO timestamp."""
+    """Parsea fechas DD/MM/YY o DD/MM/YYYY → ISO timestamp (medianoche UTC, legacy)."""
     for fmt in ["%d/%m/%y", "%d/%m/%Y"]:
         try:
             return datetime.strptime(str(date_str).strip(), fmt).strftime("%Y-%m-%d %H:%M:%S")
@@ -141,6 +180,7 @@ def load_csv_to_db(filepath: Path, league_key: str, season_label: str) -> tuple[
         print(f"    ⚠️  {filepath.name}: sin datos")
         return 0, 0
 
+    league_tz = LEAGUE_TZ.get(league_key)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     inserted = 0
@@ -150,7 +190,8 @@ def load_csv_to_db(filepath: Path, league_key: str, season_label: str) -> tuple[
         try:
             home     = str(row.get("HomeTeam", "")).strip()
             away     = str(row.get("AwayTeam", "")).strip()
-            date_str = parse_date(row.get("Date", ""))
+            time_str = row.get("Time", None)
+            date_str = parse_kickoff_utc(row.get("Date", ""), time_str, league_tz)
 
             if not home or not away or not date_str:
                 skipped += 1
@@ -181,18 +222,31 @@ def load_csv_to_db(filepath: Path, league_key: str, season_label: str) -> tuple[
             fixture_id = c.lastrowid
 
             if fixture_id == 0:
-                # Ya existía — actualizar si ahora tiene resultado
+                # Ya existía — actualizar kickoff y resultado si aplica
                 if goals_home is not None:
                     c.execute("""
                         UPDATE fixtures
                         SET goals_home = ?, goals_away = ?, result = ?,
-                            over_25 = ?, btts = ?, status = 'finished'
+                            over_25 = ?, btts = ?, status = 'finished',
+                            kickoff_utc = ?
                         WHERE league = ? AND season = ?
                           AND home_team_name = ? AND away_team_name = ?
-                          AND kickoff_utc = ? AND status != 'finished'
+                          AND status != 'finished'
                     """, (
                         goals_home, goals_away, result, over_25, btts,
-                        league_key, season_label, home, away, date_str,
+                        date_str, league_key, season_label, home, away,
+                    ))
+                else:
+                    # Partido aún no jugado — actualizar kickoff si cambió de medianoche
+                    c.execute("""
+                        UPDATE fixtures
+                        SET kickoff_utc = ?
+                        WHERE league = ? AND season = ?
+                          AND home_team_name = ? AND away_team_name = ?
+                          AND (kickoff_utc LIKE '% 00:00:00' OR kickoff_utc < ?)
+                          AND status = 'scheduled'
+                    """, (
+                        date_str, league_key, season_label, home, away, date_str,
                     ))
                 skipped += 1
                 continue
