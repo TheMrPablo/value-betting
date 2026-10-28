@@ -38,3 +38,9 @@ models/*.joblib
 config/telegram.json
 
 config/agent.json
+
+# Config local / estado personal
+.claude.json
+.claude/
+.gitconfig
+data/.telegram_offset
